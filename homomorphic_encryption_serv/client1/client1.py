@@ -7,11 +7,12 @@ import socket
 import pickle
 
 # 客户端1的IP地址（根据实际情况修改）
-client1_id = '192.168.40.81'
+client1_id = '127.0.0.1'
 # 客户端2的IP地址（根据实际情况修改）
-client2_id = '192.168.40.82'
+client2_id = '127.0.0.1'
 # 聚合服务器的IP地址（根据实际情况修改）
-server_id = '192.168.40.80'
+server_id = '127.0.0.1'
+
 
 class Client1(object):
 
@@ -67,7 +68,6 @@ class Client1(object):
 			weight_accumulators.append(self.local_model.encrypt_weights[j] - original_w[j])
 		
 		return weight_accumulators
-
 
 
 class Client2(object):

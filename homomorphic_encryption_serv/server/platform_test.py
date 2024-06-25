@@ -1,11 +1,11 @@
 import requests
 
-BASE_URL = "http://127.0.0.1:5000"  # 请根据实际情况修改
+BASE_URL = "http://127.0.0.1:5002"  # 请根据实际情况修改
 
 
 def send_data_and_get_response():
     # 构建要发送的JSON数据
-    data = {"global_epochs": 3, "local_epochs": 3, "k": [2, 3]}
+    data = {"global_epochs": 3, "local_epochs": 2, "k": [2, 3], "role": "server"}
     # 向 /process_data 端点发送POST请求，附带JSON数据
     response = requests.post(f"{BASE_URL}/process_data", json=data)
 
