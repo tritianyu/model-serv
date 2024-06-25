@@ -126,7 +126,7 @@ class Client(object):
 
             for j in range(len(self.local_model.encrypt_weights)):
                 self.local_model.encrypt_weights[j] -= self.conf["lr"] * encrypted_grad[j]
-        print()
+
         weight_accumulators = []
         # print(models.decrypt_vector(Server.private_key, weights))
         for j in range(len(self.local_model.encrypt_weights)):
@@ -157,38 +157,41 @@ def process_data():
 
     role = data.get('role')
     if role == 'server':
-        start_server()
+        response = start_server()
+        return jsonify(response), 200
     elif role == 'client':
         start_client()
-
-    return jsonify({"message": "Role assigned and process started"}), 200
+        return jsonify({"message": "Client process started"}), 200
+    else:
+        return jsonify({"message": "Invalid role"}), 400
 
 
 def start_server():
-
     with open('./utils/conf.json', 'r') as f:
         config = json.load(f)
 
-    # 加载数据集
     train_datasets, eval_datasets = read_dataset()
     server = Server(config, eval_datasets)
-
     test_acc = []
     train_size = train_datasets[0].shape[0]
     per_client_size = int(train_size / config["no_models"])
 
-    # 创建socket对象
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((config["server_id"], config["port"]))
     server_socket.listen(2)
     print("服务器启动，等待连接...")
-    # 构建要发送的JSON数据
+
     data = {"global_epochs": 3, "local_epochs": 2, "k": [2, 3], "role": "client"}
-    # 创建线程并发送请求
     threads = []
+    # 测试
     for key in config:
-        if "client" in key:
+        if "client1" in key:
             client_url = f'http://{config[key]}:5001/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, data))
+            threads.append(thread)
+            thread.start()
+        if "client2" in key:
+            client_url = f'http://{config[key]}:5003/process_data'
             thread = threading.Thread(target=send_request, args=(client_url, data))
             threads.append(thread)
             thread.start()
@@ -199,11 +202,11 @@ def start_server():
     print(f'客户端{addr2}已连接')
 
     client1_instance = Client(config, Server.public_key, server.global_model.encrypt_weights,
-                               train_datasets[0][0 * per_client_size: (0 + 1) * per_client_size],
-                               train_datasets[1][0 * per_client_size: (0 + 1) * per_client_size], 1)
+                              train_datasets[0][0 * per_client_size: (0 + 1) * per_client_size],
+                              train_datasets[1][0 * per_client_size: (0 + 1) * per_client_size], 1)
     client2_instance = Client(config, Server.public_key, server.global_model.encrypt_weights,
-                               train_datasets[0][1 * per_client_size: (1 + 1) * per_client_size],
-                               train_datasets[1][1 * per_client_size: (1 + 1) * per_client_size], 2)
+                              train_datasets[0][1 * per_client_size: (1 + 1) * per_client_size],
+                              train_datasets[1][1 * per_client_size: (1 + 1) * per_client_size], 2)
 
     instances = {config["client1_id"]: client1_instance, config["client2_id"]: client2_instance}
     send_data(client1, pickle.dumps(instances))
@@ -211,26 +214,37 @@ def start_server():
 
     for e in range(config["global_epochs"]):
         print(f"Global Epoch {e + 1}")
+        # 重新加密全局模型权重
+        server.global_model.encrypt_weights = models.encrypt_vector(Server.public_key,
+                                                                    models.decrypt_vector(Server.private_key,
+                                                                                          server.global_model.encrypt_weights))
+        weight_accumulator = {config["client1_id"]: [Server.public_key.encrypt(0.0)] * (config["feature_num"] + 1),
+                              config["client2_id"]: [Server.public_key.encrypt(0.0)] * (config["feature_num"] + 1)}
 
-        weight_accumulator = {config["client1_id"]: server.global_model.encrypt_weights,
-                              config["client2_id"]: server.global_model.encrypt_weights}
-        send_data(client1, pickle.dumps(weight_accumulator))
-        send_data(client2, pickle.dumps(weight_accumulator))
+        data_to_send = {config["client1_id"]: server.global_model.encrypt_weights,
+                        config["client2_id"]: server.global_model.encrypt_weights}
+        send_data(client1, pickle.dumps(data_to_send))
+        send_data(client2, pickle.dumps(data_to_send))
 
         updated_data1 = pickle.loads(recv_data(client1))
         updated_data2 = pickle.loads(recv_data(client2))
 
         if config["client1_id"] in updated_data1:
             diff = updated_data1[config["client1_id"]]
-            for i in range(len(weight_accumulator)):
-                weight_accumulator[i] = weight_accumulator[i] + diff[i]
+            for i in range(len(weight_accumulator[config["client1_id"]])):
+                weight_accumulator[config["client1_id"]][i] += diff[i]
 
         if config["client2_id"] in updated_data2:
             diff = updated_data2[config["client2_id"]]
-            for i in range(len(weight_accumulator)):
-                weight_accumulator[i] = weight_accumulator[i] + diff[i]
+            for i in range(len(weight_accumulator[config["client2_id"]])):
+                weight_accumulator[config["client2_id"]][i] += diff[i]
 
-        server.model_aggregate(weight_accumulator)
+        aggregated_weights = [Server.public_key.encrypt(0.0)] * (config["feature_num"] + 1)
+        for client_id in weight_accumulator:
+            for i in range(len(aggregated_weights)):
+                aggregated_weights[i] += weight_accumulator[client_id][i]
+
+        server.model_aggregate(aggregated_weights)
         acc, global_model_weights = server.model_eval()
 
         test_acc.append(float(acc / 100))
@@ -243,7 +257,7 @@ def start_server():
                 json.dump(json_data, file_obj, indent=4)
             response = {"processed_data": json_data, "message": "Data processed successfully"}
             print(f"Global Epoch {e + 1}, acc: {acc}\n")
-            return jsonify(response), 200
+            return response
 
         print(f"Global Epoch {e + 1}, acc: {acc}\n")
 
@@ -256,7 +270,7 @@ def start_server():
     plt.plot(x, test_acc, color='r', marker='.')
     plt.ylabel('Accuracy')
     plt.xlabel('Epochs')
-    plt.title('federated learning with HE')
+    plt.title('Federated Learning with HE')
     plt.savefig('./results/acc.png')
     plt.show()
 
