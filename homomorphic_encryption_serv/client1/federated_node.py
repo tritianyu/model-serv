@@ -143,33 +143,25 @@ def index():
 
 @app.route('/process_data', methods=['POST'])
 def process_data():
-    with open('./utils/conf.json', 'r') as f:
-        conf = json.load(f)
+
     # 获取请求中的JSON数据
     data = request.json
-    # 根据接收到的数据修改配置文件内容
-    for key, value in data.items():
-        if key in conf:
-            conf[key] = value
-    # 将修改后的数据写回配置文件
-    with open('./utils/conf.json', 'w') as conf_file:
-        json.dump(conf, conf_file, indent=4)
+    app.logger.info(f"Received request data: {data}")
 
     role = data.get('role')
     if role == 'server':
-        response = start_server()
+        response = start_server(data)
         return jsonify(response), 200
     elif role == 'client':
-        start_client()
+        start_client(data)
         return jsonify({"message": "Client process started"}), 200
     else:
         return jsonify({"message": "Invalid role"}), 400
 
 
-def start_server():
-    with open('./utils/conf.json', 'r') as f:
-        config = json.load(f)
+def start_server(config):
 
+    app.logger.info(f"Server received config data: {config}")
     train_datasets, eval_datasets = read_dataset()
     server = Server(config, eval_datasets)
     test_acc = []
@@ -181,18 +173,24 @@ def start_server():
     server_socket.listen(2)
     print("服务器启动，等待连接...")
 
-    data = {"global_epochs": 3, "local_epochs": 2, "k": [2, 3], "role": "client"}
+    config['role'] = 'client'
     threads = []
     # 测试
     for key in config:
+        # 实际用这个
+        """if "client" in key:
+            client_url = f'http://{config[key]}:5000/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, data))
+            threads.append(thread)
+            thread.start()"""
         if "client1" in key:
             client_url = f'http://{config[key]}:5001/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, data))
+            thread = threading.Thread(target=send_request, args=(client_url, config))
             threads.append(thread)
             thread.start()
         if "client2" in key:
             client_url = f'http://{config[key]}:5003/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, data))
+            thread = threading.Thread(target=send_request, args=(client_url, config))
             threads.append(thread)
             thread.start()
 
@@ -275,10 +273,7 @@ def start_server():
     plt.show()
 
 
-def start_client():
-    # 获取服务器ip
-    with open('./utils/conf.json', 'r') as f:
-        config = json.load(f)
+def start_client(config):
 
     # 获取本地ip
     # client1_id = get_local_ip()
