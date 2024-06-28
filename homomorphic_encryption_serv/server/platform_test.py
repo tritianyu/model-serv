@@ -17,9 +17,14 @@ def send_data_and_get_response():
                     "isInitiator": False
                 },
                 {
-                    "userId": "1",
+                    "userId": "666",
                     "url": "127.0.0.1",
                     "isInitiator": True
+                },
+                {
+                    "userId": "1",
+                    "url": "127.0.0.1",
+                    "isInitiator": False
                 }
             ],
             "platGwUrl": "http://localhost:48080"
@@ -37,7 +42,26 @@ def send_data_and_get_response():
                                 "dataSetDesc": "23",
                                 "dataSetFilePath": None,
                                 "dataSetFileName": None,
-                                "dataSetFileUrl": None,
+                                "dataSetFileUrl": "/Users/cuitianyu/model-serv/homomorphic_encryption_serv/client2/data/breast.csv",
+                                "visibility": 2,
+                                "visibilityUsers": "admin",
+                                "remark": None,
+                                "status": None,
+                                "creator": "129"
+                            }
+                        ]
+                    },
+                    {
+                        "userId": "666",
+                        "userType": 1,
+                        "resource": [
+                            {
+                                "id": "1780926403611023602",
+                                "dataSetName": "必填测试",
+                                "dataSetDesc": "23",
+                                "dataSetFilePath": None,
+                                "dataSetFileName": None,
+                                "dataSetFileUrl": "/Users/cuitianyu/model-serv/homomorphic_encryption_serv/server/data/breast.csv",
                                 "visibility": 2,
                                 "visibilityUsers": "admin",
                                 "remark": None,
@@ -48,7 +72,7 @@ def send_data_and_get_response():
                     },
                     {
                         "userId": "1",
-                        "userType": 1,
+                        "userType": 2,
                         "resource": [
                             {
                                 "id": "1781142905056477185",
@@ -56,7 +80,7 @@ def send_data_and_get_response():
                                 "dataSetDesc": "2324",
                                 "dataSetFilePath": None,
                                 "dataSetFileName": None,
-                                "dataSetFileUrl": None,
+                                "dataSetFileUrl": "/Users/cuitianyu/model-serv/homomorphic_encryption_serv/client1/data/breast.csv",
                                 "visibility": 1,
                                 "visibilityUsers": "",
                                 "remark": None,

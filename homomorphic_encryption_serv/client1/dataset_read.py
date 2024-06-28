@@ -1,10 +1,11 @@
 import numpy as np
 import struct
 
-def read_dataset():
+
+def read_dataset(file_path):
 	data_X, data_Y = [], []
 	
-	with open("./data/breast.csv") as fin:
+	with open(file_path) as fin:
 		for line in fin:
 			data = line.split(',')
 			data_X.append([float(e) for e in data[:-1]])

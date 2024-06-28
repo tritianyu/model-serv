@@ -25,9 +25,9 @@ from utils.dataset import FEMNIST, ShakeSpeare
 from opacus.grad_sample import GradSampleModule
 
 
-server_ip = "192.168.40.129"
-client1_ip = "192.168.40.131"
-client2_ip = "192.168.40.132"
+server_ip = "127.0.0.1"
+client1_ip = "127.0.0.1"
+client2_ip = "127.0.0.1"
 
 app = Flask(__name__)
 

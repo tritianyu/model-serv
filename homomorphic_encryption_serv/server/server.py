@@ -21,8 +21,9 @@ app = Flask(__name__)
 def index():
     return 'Flask Web Service is running!'
 
+
 class Server(object):
-	
+
 	public_key, private_key = paillier.generate_paillier_keypair(n_length=1024)
 	
 	def __init__(self, conf, eval_dataset):
@@ -248,21 +249,11 @@ def process_data():
 	client2, addr2 = server_socket.accept()
 	print(f'客户端{addr2}已连接')
 
-	# 为客户端创建好实例并发送给各个客户端
-	client1_instance = Client1(conf, Server.public_key, server.global_model.encrypt_weights,
-							  	train_datasets[0][0 * per_client_size: (0 + 1) * per_client_size],
-								train_datasets[1][0 * per_client_size: (0 + 1) * per_client_size])
-	client2_instance = Client2(conf, Server.public_key, server.global_model.encrypt_weights,
-							  	train_datasets[0][1 * per_client_size: (1 + 1) * per_client_size],
-								train_datasets[1][1 * per_client_size: (1 + 1) * per_client_size])
-
-	instances = {client1_id: client1_instance, client2_id: client2_instance}
-
+	# 将初始化全局模型发给客户端1和客户端2
+	initial_global_model = server.global_model.encrypt_weights
 	# 发送大数据用特殊方法发送
-	# client1.send(pickle.dumps(instances))
-	# client2.send(pickle.dumps(instances))
-	send_data(client1, pickle.dumps(instances))
-	send_data(client2, pickle.dumps(instances))
+	send_data(client1, pickle.dumps(initial_global_model))
+	send_data(client2, pickle.dumps(initial_global_model))
 
 
 	for e in range(conf["global_epochs"]):

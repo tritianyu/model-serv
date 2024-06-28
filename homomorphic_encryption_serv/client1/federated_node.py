@@ -107,6 +107,9 @@ class Client(object):
                 self.local_model.encrypt_weights = Server.re_encrypt(self.local_model.encrypt_weights)
 
             idx = np.arange(self.data_x.shape[0])
+            if len(idx) == 0:
+                raise ValueError(f"Client {self.num} has no data to train on.")
+
             batch_idx = np.random.choice(idx, self.conf["modelParams"]["modelData"]['batch_size'], replace=False)
             # print(batch_idx)
 
@@ -162,11 +165,6 @@ def process_data():
 def start_server(config):
 
     app.logger.info(f"Server received config data: {config}")
-    train_datasets, eval_datasets = read_dataset()
-    server = Server(config, eval_datasets)
-    test_acc = []
-    train_size = train_datasets[0].shape[0]
-    per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((config["baseConfig"]["modelControlUrl"], 12345))
@@ -178,49 +176,75 @@ def start_server(config):
 
     for entry in config['baseConfig']['modelCalUrlList']:
         client_url = ""
-        # 实际用这个
-        """user_id = entry['userId']
-        url = entry['url']
-        is_initiator = entry['isInitiator']
-        # 角色是否区分待定
-        if is_initiator:
-            client_url = f'http://{url}:5000/process_data'
-        else:
-            client_url = f'http://{url}:5000/process_data'
 
-        thread = threading.Thread(target=send_request, args=(client_url, config))
-        threads.append(thread)
-        thread.start()"""
-        # 测试
         user_id = int(entry['userId'])
 
         url = entry['url']
+
         is_initiator = entry['isInitiator']
-
-        if user_id == 1:
-            client_url = f'http://{url}:5001/process_data'
-        elif user_id == 129:
-            client_url = f'http://{url}:5003/process_data'
-
-        thread = threading.Thread(target=send_request, args=(client_url, config))
-        threads.append(thread)
-        thread.start()
+        if is_initiator:
+            dataset_file_url = None
+            for organ in config["modelParams"]["dataSet"]["projectOrgans"]:
+                if int(organ["userId"]) == user_id:
+                    dataset_file_url = organ["resource"][0]["dataSetFileUrl"]
+                    break
+            if dataset_file_url:
+                train_datasets, eval_datasets = read_dataset(dataset_file_url)
+                server = Server(config, eval_datasets)
+                test_acc = []
+                train_size = len(train_datasets)
+                per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
+            else:
+                app.logger.error(f"No dataset_file_url found for user_id: {user_id}")
+                continue
+        else:
+            # 实际用这个
+            """
+                client_url = f'http://{url}:5000/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, config))
+            threads.append(thread)
+            thread.start()"""
+            if user_id == 1:
+                client_url = f'http://{url}:5001/process_data'
+            elif user_id == 129:
+                client_url = f'http://{url}:5003/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, config))
+            threads.append(thread)
+            thread.start()
 
     clients = []
     instances = {}
+    connected_clients = 0
+    # 过滤出非isInitiator的model
+    non_initiators = [model_url for model_url in config["baseConfig"]["modelCalUrlList"] if
+                      not model_url["isInitiator"]]
     # 动态接受客户端连接并创建实例
-    for i, model_url in enumerate(config["baseConfig"]["modelCalUrlList"]):
+    for i, model_url in enumerate(non_initiators):
         client_socket, addr = server_socket.accept()
+        connected_clients += 1
         print(f'客户端{addr}已连接')
-        client_instance = Client(config, Server.public_key, server.global_model.encrypt_weights,
-                                 train_datasets[0][i * per_client_size: (i + 1) * per_client_size],
-                                 train_datasets[1][i * per_client_size: (i + 1) * per_client_size], i+1)
-        clients.append(client_socket)
-        instances[model_url["url"]] = client_instance
 
-    # 发送实例到客户端
+        client_instance_config = {
+            "config": config,
+            "public_key": Server.public_key,
+            "data_slice": f"train_datasets[0][{i * per_client_size}:{(i + 1) * per_client_size}]",
+        "data_slice_y": f"train_datasets[1][{i * per_client_size}:{(i + 1) * per_client_size}]",
+            "num": i + 1
+        }
+        clients.append(client_socket)
+        instances[model_url["url"]] = client_instance_config
+    app.logger.info(f"Total connected clients: {connected_clients}")
+
+    # 创建包含初始全局模型和配置数据的字典
+    initial_data = {
+        "initial_global_model": server.global_model.encrypt_weights,
+        "config_data": instances
+    }
+    # 发送初始化数据到客户端
+    app.logger.info("Sending initial data to clients")
     for client_socket in clients:
-        send_data(client_socket, pickle.dumps(instances))
+        send_data(client_socket, pickle.dumps(initial_data))
+        app.logger.info(f"Sent data to client: {client_socket}")
 
     for e in range(config["modelParams"]["modelData"]["global_epochs"]):
         print(f"Global Epoch {e + 1}")
@@ -232,6 +256,7 @@ def start_server(config):
         data_to_send = {model_url["url"]: server.global_model.encrypt_weights for model_url in config["baseConfig"]["modelCalUrlList"]}
         for client_socket in clients:
             send_data(client_socket, pickle.dumps(data_to_send))
+            app.logger.info(f"Sent global model to client: {client_socket}")
 
         for client_socket in clients:
             updated_data = pickle.loads(recv_data(client_socket))
@@ -277,8 +302,21 @@ def start_client(config):
     # 获取本地ip
     # client1_id = get_local_ip()
     client1_id = '127.0.0.1'
+    matching_entry = None
+    for entry in config['baseConfig']['modelCalUrlList']:
+        if entry['url'] == client1_id:
+            matching_entry = entry
+            break
+    if not matching_entry:
+        app.logger.error(f"Not find matching client url")
+    user_id = matching_entry['userId']
+    for organ in config['modelParams']['dataSet']['projectOrgans']:
+        if organ['userId'] == user_id:
+            dataset_file_url = organ['resource'][0]['dataSetFileUrl']
+            break
 
-    train_datasets, eval_datasets = read_dataset()
+    train_datasets, eval_datasets = read_dataset(dataset_file_url)
+
     train_size = train_datasets[0].shape[0]
     per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
 
@@ -289,16 +327,34 @@ def start_client(config):
     print(f"{client1_id}已连接服务器")
     # 接收服务器发来的客户端实例（使用特殊方法接收大数据）
     # client_instance = client_socket.recv(10240)
-    client_instance = recv_data(client_socket)
+    initial_data = recv_data(client_socket)
     print("已接受数据")
-    if not client_instance:
+    if not initial_data:
         client_socket.close()
-    client_instance = pickle.loads(client_instance)
+    initial_data = pickle.loads(initial_data)
+    initial_global_model = initial_data["initial_global_model"]
+    config_data = initial_data["config_data"]
+    # 根据接受到的配置实例化本地模型
+    client_config = config_data[client1_id]
+    data_slice = client_config["data_slice"]
+    data_slice_y = client_config["data_slice_y"]
+    print(data_slice)
+    # 使用 eval() 函数来获取实际的数据分片
+    train_data_x = eval(data_slice)
+    print(train_data_x)
+    train_data_y = eval(data_slice_y)
+    client_1 = Client(
+        client_config["config"],
+        client_config["public_key"],
+        initial_global_model,
+        train_data_x,
+        train_data_y,
+        client_config["num"]
+    )
+
     print("已加载实例")
-    client_1 = client_instance[client1_id]
 
     # client_1 = Client(conf, Server.public_key, data['192.168.40.81'],train_datasets[0][0*per_client_size: (0+1)*per_client_size],train_datasets[1][0*per_client_size: (0+1)*per_client_size])
-
     while True:
         # 接收服务器发来的全局模型参数，准备训练（使用特殊方法接收大数据）
         # data = client_socket.recv(10240)

@@ -13,7 +13,6 @@ client2_id = '127.0.0.1'
 # 聚合服务器的IP地址（根据实际情况修改）
 server_id = '127.0.0.1'
 
-
 class Client1(object):
 
     def __init__(self, conf, public_key, weights, data_x, data_y):
@@ -144,14 +143,14 @@ def client(ip):
     # 连接到服务器
     client_socket.connect((ip, 12345))
 
-    # 接收服务器发来的客户端实例
-    # client_instance = client_socket.recv(10240)
-    client_instance = recv_data(client_socket)
-    if not client_instance:
+    # 接收服务器发来的初始化全局模型（使用特殊方法接收大数据）
+    server_data = recv_data(client_socket)
+    if not server_data:
         client_socket.close()
-    client_instance = pickle.loads(client_instance)
-    client_2 = client_instance[client2_id]
-    # client_2 = Client(conf, Server.public_key, data['192.168.40.82'],train_datasets[0][1 * per_client_size: (1 + 1) * per_client_size],train_datasets[1][1 * per_client_size: (1 + 1) * per_client_size])
+    initial_global_model = pickle.loads(server_data)
+    client_2 = Client2(conf, Server.public_key, initial_global_model,
+                       train_datasets[0][1 * per_client_size: (1 + 1) * per_client_size],
+                       train_datasets[1][1 * per_client_size: (1 + 1) * per_client_size])
 
 
     while True:

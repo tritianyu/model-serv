@@ -139,20 +139,19 @@ def client(ip):
 	train_size = train_datasets[0].shape[0]
 	per_client_size = int(train_size / conf["no_models"])
 
-
 	# 创建socket对象
 	client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	# 连接到服务器
 	client_socket.connect((ip, 12345))
 
-	# 接收服务器发来的客户端实例（使用特殊方法接收大数据）
-	# client_instance = client_socket.recv(10240)
-	client_instance = recv_data(client_socket)
-	if not client_instance:
+	# 接收服务器发来的初始化全局模型（使用特殊方法接收大数据）
+	server_data = recv_data(client_socket)
+	if not server_data:
 		client_socket.close()
-	client_instance = pickle.loads(client_instance)
-	client_1 = client_instance[client1_id]
-	# client_1 = Client(conf, Server.public_key, data['192.168.40.81'],train_datasets[0][0*per_client_size: (0+1)*per_client_size],train_datasets[1][0*per_client_size: (0+1)*per_client_size])
+	initial_global_model = pickle.loads(server_data)
+	client_1 = Client1(conf, Server.public_key, initial_global_model,
+					   train_datasets[0][0 * per_client_size: (0 + 1) * per_client_size],
+					   train_datasets[1][0 * per_client_size: (0 + 1) * per_client_size])
 
 
 	while True:
