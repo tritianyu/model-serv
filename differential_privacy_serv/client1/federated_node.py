@@ -25,64 +25,35 @@ from opacus.grad_sample import GradSampleModule
 import requests
 import threading
 
-server_ip = "127.0.0.1"
-client1_ip = "127.0.0.1"
-client2_ip = "127.0.0.1"
+
 app = Flask(__name__)
+
 
 @app.route('/')
 def index():
     return 'Flask Web Service is running!'
+
+
 @app.route('/process_data', methods=['POST'])
 def process_data():
-    with open('./json/conf.json', 'r') as f:
-        conf = json.load(f)
     # 获取请求中的JSON数据
     data = request.json
-    # 根据接收到的数据修改配置文件内容
-    for key, value in data.items():
-        if key in conf:
-            conf[key] = value
-    # 将修改后的数据写回配置文件
-    with open('./json/conf.json', 'w') as conf_file:
-        json.dump(conf, conf_file, indent=4)
     role = data.get('role')
     if role == 'server':
-        start_server()
+        start_server(data)
     elif role == 'client':
-        start_client()
+        start_client(data)
     return jsonify({"message": "Role assigned and process started"}), 200
-def start_server():
+
+
+def start_server(config):
+    app.logger.info(f"Server received config data: {config}")
     # 获取请求中的JSON数据
-    data = request.json
-
-    # 读取现有的配置文件
-    conf_file_path = 'json/conf.json'
-    if os.path.exists(conf_file_path):
-        with open(conf_file_path, 'r') as conf_file:
-            conf_data = json.load(conf_file)
-    else:
-        conf_data = {}
-
-    # 根据接收到的数据修改配置文件内容
-    for key, value in data.items():
-        if key in conf_data:
-            conf_data[key] = value
-
-    # 将修改后的数据写回配置文件
-    with open(conf_file_path, 'w') as conf_file:
-        json.dump(conf_data, conf_file, indent=4)
-
-    # 进行一些处理，假设处理是将数据中的每个值翻倍
-    # parse args
     random.seed(123)
     np.random.seed(123)
     torch.manual_seed(123)
     torch.cuda.manual_seed_all(123)
     torch.cuda.manual_seed(123)
-
-    with open('./json/conf.json', 'r') as f:
-        config = json.load(f)
 
     # model = CNNMnist(args)
     # model.load_state_dict(torch.load('DP_model.pth'))
@@ -176,7 +147,7 @@ def start_server():
                    range(config["num_users"])]
 
     threads = []
-    data = {"role": "client"}
+    config['role'] = 'client'
     """for key in config:
         if "client" in key:
             client_url = f'http://{config["key"]}:5001/process_data'
@@ -187,18 +158,18 @@ def start_server():
     for key in config:
         if "client1" in key:
             client_url = f'http://{config[key]}:5002/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, data))
+            thread = threading.Thread(target=send_request, args=(client_url, config))
             threads.append(thread)
             thread.start()
         if "client2" in key:
             client_url = f'http://{config[key]}:5003/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, data))
+            thread = threading.Thread(target=send_request, args=(client_url, config))
             threads.append(thread)
             thread.start()
     # 创建socket对象
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # 绑定IP地址和端口号
-    server_socket.bind((server_ip, 12345))
+    server_socket.bind((config["server_ip"], 12345))
     # 开始监听
     server_socket.listen(2)
     print("服务器启动，等待连接...")
@@ -213,8 +184,8 @@ def start_server():
         t_start = time.time()
         w_locals, loss_locals, weight_locals = [], [], []
         client_model_mapping = {
-            client1_ip: [clients[0], net_glob, loss],
-            client2_ip: [clients[1], net_glob, loss]
+            config["client1_ip"]: [clients[0], net_glob, loss],
+            config["client2_ip"]: [clients[1], net_glob, loss]
         }
 
         # 向客户端发送数据
@@ -224,16 +195,16 @@ def start_server():
         updated_data1 = pickle.loads(recv_data(client1))
         updated_data2 = pickle.loads(recv_data(client2))
 
-        if client1_ip in updated_data1:
-            client_model_mapping[client1_ip] = updated_data1[client1_ip]
-            model_and_loss = client_model_mapping[client1_ip]
+        if config["client1_ip"] in updated_data1:
+            client_model_mapping[config["client1_ip"]] = updated_data1[config["client1_ip"]]
+            model_and_loss = client_model_mapping[config["client1_ip"]]
             w_locals.append(copy.deepcopy(model_and_loss[1]))
             loss_locals.append(copy.deepcopy(model_and_loss[2]))
             weight_locals.append(len(dict_users[0]))
 
-        if client2_ip in updated_data2:
-            client_model_mapping[client2_ip] = updated_data2[client2_ip]
-            model_and_loss = client_model_mapping[client2_ip]
+        if config["client2_ip"] in updated_data2:
+            client_model_mapping[config["client2_ip"]] = updated_data2[config["client2_ip"]]
+            model_and_loss = client_model_mapping[config["client2_ip"]]
             w_locals.append(copy.deepcopy(model_and_loss[1]))
             loss_locals.append(copy.deepcopy(model_and_loss[2]))
             weight_locals.append(len(dict_users[1]))
@@ -317,7 +288,7 @@ def start_server():
             result_data = json.load(conf_file)
     # 构建响应数据
     response = {
-        "original_data": data,
+        "original_data": config,
         "processed_data": result_data,
         "message": "Data processed successfully"
     }
@@ -325,7 +296,8 @@ def start_server():
     return jsonify(response), 200
 
 
-def start_client():
+def start_client(config):
+    app.logger.info(f"Client received config data: {config}")
     # parse args
     random.seed(123)
     np.random.seed(123)
@@ -335,15 +307,12 @@ def start_client():
 
     lock = threading.Lock()
 
-    with open('./json/conf.json', 'r') as f:
-        config = json.load(f)
-
     config["device"] = torch.device('cuda:{}'.format(config["gpu"]) if torch.cuda.is_available() and config["gpu"] != -1 else 'cpu')
 
     # 创建socket对象
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # 连接到服务器
-    client_socket.connect((server_ip, 12345))
+    client_socket.connect((config["server_ip"], 12345))
 
     while True:
         # 接收数据
@@ -352,14 +321,15 @@ def start_client():
             break
         data = pickle.loads(data)
 
-        model_and_loss = data[client2_ip]
+        model_and_loss = data[config["client2_ip"]]
         w = model_and_loss[1]
         local = model_and_loss[0]
         print("客户端 2 正在处理数据......")
 
         # net_glob = CNNMnist(args=config).to(config["device"])
+        print(local)
         trained_model, loss_value = local.train(net=copy.deepcopy(w).to(config["device"]))
-        data[client2_ip] = [model_and_loss[0], trained_model, loss_value]
+        data[config["client2_ip"]] = [model_and_loss[0], trained_model, loss_value]
 
         print("客户端 2 训练结束，准备上传模型......")
         # 发送处理后的数据
@@ -368,6 +338,8 @@ def start_client():
         print("模型上传完毕\n")
 
     client_socket.close()
+
+
 def get_local_ip():
     try:
         # 创建一个UDP连接

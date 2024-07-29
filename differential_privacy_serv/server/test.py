@@ -28,7 +28,10 @@ def send_data_and_get_response():
     "serial_bs": 128,
     "batch_size": 64,
     "user": [0, 1],
-    "role": "server"
+    "role": "server",
+    "client1_ip": "127.0.0.1",
+    "client2_ip": "127.0.0.1",
+    "server_ip": "127.0.0.1"
 }
     # 向 /process_data 端点发送POST请求，附带JSON数据
     response = requests.post(f"{BASE_URL}/process_data", json=data)

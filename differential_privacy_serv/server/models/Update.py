@@ -71,7 +71,8 @@ class LocalUpdateDP(object):
         optimizer = torch.optim.SGD(net.parameters(), lr=self.lr)  # 使用随机梯度下降优化器
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=self.args["lr_decay"])  # 学习率调度器
         loss_client = 0  # 初始化损失
-
+        self.args["device"] = torch.device(
+            'cuda:{}'.format(self.args["gpu"]) if torch.cuda.is_available() and self.args["gpu"] != -1 else 'cpu')
         # 本地更新一次
         for images, labels in self.ldr_train:
             images, labels = images.to(self.args["device"]), labels.to(self.args["device"])  # 将数据移动到指定的设备（GPU或CPU）
@@ -177,6 +178,8 @@ class LocalUpdateDPSerial(LocalUpdateDP):
 
         # 初始化损失变量
         losses = 0
+        self.args["device"] = torch.device(
+            'cuda:{}'.format(self.args["gpu"]) if torch.cuda.is_available() and self.args["gpu"] != -1 else 'cpu')
 
         # 遍历训练数据加载器
         for images, labels in self.ldr_train:

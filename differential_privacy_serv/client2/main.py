@@ -95,6 +95,7 @@ if __name__ == '__main__':
         print("客户端 2 正在处理数据......")
 
         net_glob = CNNMnist(args=args).to(args.device)
+
         trained_model, loss_value = local.train(net=copy.deepcopy(w).to(args.device))
         data[client2_ip] = [model_and_loss[0], trained_model, loss_value]
 
