@@ -228,7 +228,7 @@ def start_server(config):
             "config": config,
             "public_key": Server.public_key,
             "data_slice": f"train_datasets[0][{i} * per_client_size:{(i + 1)} * per_client_size]",
-        "data_slice_y": f"train_datasets[1][{i}* per_client_size:{(i + 1)}* per_client_size]",
+        "data_slice_y": f"train_datasets[1][{i} * per_client_size:{(i + 1)}* per_client_size]",
             "num": i + 1
         }
         clients.append(client_socket)

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import argparse
 import json
+import os
 
 
 def args_parser():
@@ -50,3 +51,6 @@ def args_parser():
     return args
 
 
+if __name__ == "__main__":
+    args = args_parser()
+    print(args)

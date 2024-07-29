@@ -12,7 +12,6 @@ import pickle
 import threading
 import time
 
-import draw
 from utils.sampling import mnist_iid, mnist_noniid, cifar_iid,cifar_noniid
 from utils.options import args_parser
 from models.Update import LocalUpdateDP, LocalUpdateDPSerial
@@ -23,8 +22,8 @@ from utils.dataset import FEMNIST, ShakeSpeare
 from opacus.grad_sample import GradSampleModule
 
 
-server_ip = "192.168.40.129"
-client1_ip = "192.168.40.131"
+server_ip = "127.0.0.1"
+client1_ip = "127.0.0.1"
 
 def send_data(sock, data):
     # 计算数据长度并打包

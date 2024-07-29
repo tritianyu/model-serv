@@ -14,7 +14,6 @@ import os
 import argparse, json
 from flask import Flask, request, jsonify
 
-import draw
 from utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
 from utils.options import args_parser
 from models.Update import LocalUpdateDP, LocalUpdateDPSerial
@@ -23,23 +22,37 @@ from models.Fed import FedAvg, FedWeightAvg
 from models.test import test_img
 from utils.dataset import FEMNIST, ShakeSpeare
 from opacus.grad_sample import GradSampleModule
-
+import requests
+import threading
 
 server_ip = "127.0.0.1"
 client1_ip = "127.0.0.1"
 client2_ip = "127.0.0.1"
-
 app = Flask(__name__)
-
 
 @app.route('/')
 def index():
     return 'Flask Web Service is running!'
-
-
-# 处理接收JSON数据并返回处理结果的路由
 @app.route('/process_data', methods=['POST'])
 def process_data():
+    with open('./json/conf.json', 'r') as f:
+        conf = json.load(f)
+    # 获取请求中的JSON数据
+    data = request.json
+    # 根据接收到的数据修改配置文件内容
+    for key, value in data.items():
+        if key in conf:
+            conf[key] = value
+    # 将修改后的数据写回配置文件
+    with open('./json/conf.json', 'w') as conf_file:
+        json.dump(conf, conf_file, indent=4)
+    role = data.get('role')
+    if role == 'server':
+        start_server()
+    elif role == 'client':
+        start_client()
+    return jsonify({"message": "Role assigned and process started"}), 200
+def start_server():
     # 获取请求中的JSON数据
     data = request.json
 
@@ -68,30 +81,31 @@ def process_data():
     torch.cuda.manual_seed_all(123)
     torch.cuda.manual_seed(123)
 
-    args = args_parser()
+    with open('./json/conf.json', 'r') as f:
+        config = json.load(f)
 
     # model = CNNMnist(args)
     # model.load_state_dict(torch.load('DP_model.pth'))
     # model.eval()
 
-    args.device = torch.device(
-        'cuda:{}'.format(args.gpu) if torch.cuda.is_available() and args.gpu != -1 else 'cpu')
+    config["device"] = torch.device(
+        'cuda:{}'.format(config["gpu"]) if torch.cuda.is_available() and config["gpu"] != -1 else 'cpu')
     dict_users = {}
     dataset_train, dataset_test = None, None
 
     # load dataset and split users
-    if args.dataset == 'mnist':
+    if config["dataset"] == 'mnist':
         trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans_mnist)
         dataset_test = datasets.MNIST('./data/mnist/', train=False, download=True, transform=trans_mnist)
-        args.num_channels = 1
+        config["num_channels"] = 1
         # sample users
-        if args.iid:
-            dict_users = mnist_iid(dataset_train, args.num_users)
+        if config["iid"]:
+            dict_users = mnist_iid(dataset_train, config["num_users"])
         else:
-            dict_users = mnist_noniid(dataset_train, args.num_users)
-    elif args.dataset == 'cifar':
-        args.num_channels = 3
+            dict_users = mnist_noniid(dataset_train, config["num_users"])
+    elif config["dataset"] == 'cifar':
+        config["num_channels"] = 3
         trans_cifar_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
@@ -104,16 +118,16 @@ def process_data():
         ])
         dataset_train = datasets.CIFAR10('./data/cifar', train=True, download=True, transform=trans_cifar_train)
         dataset_test = datasets.CIFAR10('./data/cifar', train=False, download=True, transform=trans_cifar_test)
-        if args.iid:
-            dict_users = cifar_iid(dataset_train, args.num_users)
+        if config["iid"]:
+            dict_users = cifar_iid(dataset_train, config["num_users"])
         else:
-            dict_users = cifar_noniid(dataset_train, args.num_users)
-    elif args.dataset == 'shakespeare':
+            dict_users = cifar_noniid(dataset_train, config["num_users"])
+    elif config["dataset"] == 'shakespeare':
         dataset_train = ShakeSpeare(train=True)
         dataset_test = ShakeSpeare(train=False)
         dict_users = dataset_train.get_client_dic()
-        args.num_users = len(dict_users)
-        if args.iid:
+        config["num_users"] = len(dict_users)
+        if config["iid"]:
             exit('Error: ShakeSpeare dataset is naturally non-iid')
         else:
             print(
@@ -124,29 +138,29 @@ def process_data():
 
     net_glob = None
     # build model
-    if args.model == 'cnn' and args.dataset == 'cifar':
-        net_glob = CNNCifar(args=args).to(args.device)
-    elif args.model == 'cnn' and (args.dataset == 'mnist'):
-        net_glob = CNNMnist(args=args).to(args.device)
-    elif args.dataset == 'shakespeare' and args.model == 'lstm':
-        net_glob = CharLSTM().to(args.device)
-    elif args.model == 'mlp':
+    if config["model"] == 'cnn' and config["dataset"] == 'cifar':
+        net_glob = CNNCifar(args=config).to(config["device"])
+    elif config["model"] == 'cnn' and (config["dataset"] == 'mnist'):
+        net_glob = CNNMnist(args=config).to(config["device"])
+    elif config["dataset"] == 'shakespeare' and config["model"] == 'lstm':
+        net_glob = CharLSTM().to(config["device"])
+    elif config["model"] == 'mlp':
         len_in = 1
         for x in img_size:
             len_in *= x
-        net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=args.num_classes).to(args.device)
+        net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=config["num_classes"]).to(config["device"])
     else:
         exit('Error: unrecognized model')
 
     # use opacus to wrap model to clip per sample gradient
-    if args.dp_mechanism != 'no_dp':
+    if config["dp_mechanism"] != 'no_dp':
         net_glob = GradSampleModule(net_glob)
     print(net_glob)
     net_glob.train()  # 模型标识为训练状态
 
     # copy weights
     w_glob = net_glob.state_dict()
-    all_clients = list(range(args.num_users))
+    all_clients = list(range(config["num_users"]))
 
     # training
     loss = 0
@@ -154,13 +168,33 @@ def process_data():
     acc_list = []
     loss_test = []
     loss_list = []
-    if args.serial:
-        clients = [LocalUpdateDPSerial(args=args, dataset=dataset_train, idxs=dict_users[i]) for i in
-                   range(args.num_users)]
+    if config["serial"]:
+        clients = [LocalUpdateDPSerial(args=config, dataset=dataset_train, idxs=dict_users[i]) for i in
+                   range(config["num_users"])]
     else:
-        clients = [LocalUpdateDP(args=args, dataset=dataset_train, idxs=dict_users[i]) for i in
-                   range(args.num_users)]
+        clients = [LocalUpdateDP(args=config, dataset=dataset_train, idxs=dict_users[i]) for i in
+                   range(config["num_users"])]
 
+    threads = []
+    data = {"role": "client"}
+    """for key in config:
+        if "client" in key:
+            client_url = f'http://{config["key"]}:5001/process_data'
+            thread = threading.Thread(target=send_request, config=(client_url, data))
+            threads.append(thread)
+            thread.start()"""
+
+    for key in config:
+        if "client1" in key:
+            client_url = f'http://{config[key]}:5002/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, data))
+            threads.append(thread)
+            thread.start()
+        if "client2" in key:
+            client_url = f'http://{config[key]}:5003/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, data))
+            threads.append(thread)
+            thread.start()
     # 创建socket对象
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # 绑定IP地址和端口号
@@ -175,7 +209,7 @@ def process_data():
     client2, addr2 = server_socket.accept()
     print(f'客户端{addr2}已连接')
 
-    for iter in range(args.epochs):
+    for iter in range(config["epochs"]):
         t_start = time.time()
         w_locals, loss_locals, weight_locals = [], [], []
         client_model_mapping = {
@@ -207,7 +241,7 @@ def process_data():
         net_glob.load_state_dict(w_glob)
 
         net_glob.eval()
-        acc_t, loss_t = test_img(net_glob, dataset_test, args)
+        acc_t, loss_t = test_img(net_glob, dataset_test, config)
         t_end = time.time()
         print("Round {:3d},Testing accuracy: {:.2f},Loss：{:.5f}, Time:  {:.2f}s".format(iter, acc_t, loss_t,
                                                                                         t_end - t_start))
@@ -222,7 +256,7 @@ def process_data():
     client2.close()
     server_socket.close()
 
-    model = CNNMnist(args)
+    model = CNNMnist(config)
     model.load_state_dict(torch.load('DP_model.pth', map_location=torch.device('cpu')))
     # 计算加密前后模型之间的Pearson相关性系数
     count = 0
@@ -291,6 +325,72 @@ def process_data():
     return jsonify(response), 200
 
 
+def start_client():
+    # parse args
+    random.seed(123)
+    np.random.seed(123)
+    torch.manual_seed(123)
+    torch.cuda.manual_seed_all(123)
+    torch.cuda.manual_seed(123)
+
+    lock = threading.Lock()
+
+    with open('./json/conf.json', 'r') as f:
+        config = json.load(f)
+
+    config["device"] = torch.device('cuda:{}'.format(config["gpu"]) if torch.cuda.is_available() and config["gpu"] != -1 else 'cpu')
+
+    # 创建socket对象
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # 连接到服务器
+    client_socket.connect((server_ip, 12345))
+
+    while True:
+        # 接收数据
+        data = recv_data(client_socket)
+        if not data:
+            break
+        data = pickle.loads(data)
+
+        model_and_loss = data[client2_ip]
+        w = model_and_loss[1]
+        local = model_and_loss[0]
+        print("客户端 2 正在处理数据......")
+
+        # net_glob = CNNMnist(args=config).to(config["device"])
+        trained_model, loss_value = local.train(net=copy.deepcopy(w).to(config["device"]))
+        data[client2_ip] = [model_and_loss[0], trained_model, loss_value]
+
+        print("客户端 2 训练结束，准备上传模型......")
+        # 发送处理后的数据
+        send_data(client_socket, pickle.dumps(data))
+        # client_socket.send(pickle.dumps(data))
+        print("模型上传完毕\n")
+
+    client_socket.close()
+def get_local_ip():
+    try:
+        # 创建一个UDP连接
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # 连接到一个外部的IP地址，这里用的是Google的DNS服务器IP
+        s.connect(("8.8.8.8", 80))
+        # 获取本地IP地址
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception as e:
+        local_ip = "Unable to get IP"
+        print(f"Error: {e}")
+    return local_ip
+
+
+def send_request(client_url, data):
+    try:
+        response = requests.post(client_url, json=data)
+        print(f"Response from {client_url}: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"Request to {client_url} failed: {e}")
+
+
 def send_data(sock, data):
     # 计算数据长度并打包
     data_length = len(data)
@@ -330,5 +430,4 @@ def recv_data(sock):
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
-
+    app.run(debug=True, host='0.0.0.0', port=5003)

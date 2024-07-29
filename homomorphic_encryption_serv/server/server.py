@@ -225,7 +225,6 @@ def process_data():
 	with open('./utils/conf.json', 'r') as f:
 		conf = json.load(f)
 
-
 	train_datasets, eval_datasets = read_dataset()
 
 	server = Server(conf, eval_datasets)

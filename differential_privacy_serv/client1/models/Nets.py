@@ -32,11 +32,11 @@ class MLP(nn.Module):
 class CNNMnist(nn.Module):
     def __init__(self, args):
         super(CNNMnist, self).__init__()
-        self.conv1 = nn.Conv2d(args.num_channels, 10, kernel_size=5)
+        self.conv1 = nn.Conv2d(args["num_channels"], 10, kernel_size=5)
         self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
         self.conv2_drop = nn.Dropout2d()
         self.fc1 = nn.Linear(320, 50)
-        self.fc2 = nn.Linear(50, args.num_classes)
+        self.fc2 = nn.Linear(50, args["num_classes"])
 
     def forward(self, x):
         x = F.relu(F.max_pool2d(self.conv1(x), 2))
@@ -62,7 +62,7 @@ class CNNCifar(nn.Module):
         # self.fc3 = nn.Linear(84, args.num_classes)
         self.fc1 = nn.Linear(64 * 4 * 4, 384)
         self.fc2 = nn.Linear(384, 192)
-        self.fc3 = nn.Linear(192, args.num_classes)
+        self.fc3 = nn.Linear(192, args["num_classes"])
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
