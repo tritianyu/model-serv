@@ -3,19 +3,16 @@ import random
 import socket
 import struct
 import time
-import matplotlib
-matplotlib.use('TkAgg')
-import matplotlib.pyplot as plt
+
 import copy
 import numpy as np
 from torchvision import datasets, transforms
 import torch
 import os
-import argparse, json
+import json
 from flask import Flask, request, jsonify
 
 from utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
-from utils.options import args_parser
 from models.Update import LocalUpdateDP, LocalUpdateDPSerial
 from models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM
 from models.Fed import FedAvg, FedWeightAvg
@@ -47,6 +44,7 @@ def process_data():
 
 
 def start_server(config):
+
     app.logger.info(f"Server received config data: {config}")
     # 获取请求中的JSON数据
     random.seed(123)
@@ -54,29 +52,30 @@ def start_server(config):
     torch.manual_seed(123)
     torch.cuda.manual_seed_all(123)
     torch.cuda.manual_seed(123)
+    # config替换为modelParams
 
     # model = CNNMnist(args)
     # model.load_state_dict(torch.load('DP_model.pth'))
     # model.eval()
 
     config["device"] = torch.device(
-        'cuda:{}'.format(config["gpu"]) if torch.cuda.is_available() and config["gpu"] != -1 else 'cpu')
+        'cuda:{}'.format(config["modelParams"]["modelData"]["gpu"]) if torch.cuda.is_available() and config["modelParams"]["modelData"]["gpu"] != -1 else 'cpu')
     dict_users = {}
     dataset_train, dataset_test = None, None
 
     # load dataset and split users
-    if config["dataset"] == 'mnist':
+    if config["modelParams"]["modelData"]["dataset"] == 'mnist':
         trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans_mnist)
         dataset_test = datasets.MNIST('./data/mnist/', train=False, download=True, transform=trans_mnist)
-        config["num_channels"] = 1
+        config["modelParams"]["modelData"]["num_channels"] = 1
         # sample users
-        if config["iid"]:
-            dict_users = mnist_iid(dataset_train, config["num_users"])
+        if config["modelParams"]["modelData"]["iid"]:
+            dict_users = mnist_iid(dataset_train, config["modelParams"]["modelData"]["num_users"])
         else:
-            dict_users = mnist_noniid(dataset_train, config["num_users"])
-    elif config["dataset"] == 'cifar':
-        config["num_channels"] = 3
+            dict_users = mnist_noniid(dataset_train, config["modelParams"]["modelData"]["num_users"])
+    elif config["modelParams"]["modelData"]["dataset"] == 'cifar':
+        config["modelParams"]["modelData"]["num_channels"] = 3
         trans_cifar_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
@@ -89,16 +88,16 @@ def start_server(config):
         ])
         dataset_train = datasets.CIFAR10('./data/cifar', train=True, download=True, transform=trans_cifar_train)
         dataset_test = datasets.CIFAR10('./data/cifar', train=False, download=True, transform=trans_cifar_test)
-        if config["iid"]:
-            dict_users = cifar_iid(dataset_train, config["num_users"])
+        if config["modelParams"]["modelData"]["iid"]:
+            dict_users = cifar_iid(dataset_train, config["modelParams"]["modelData"]["num_users"])
         else:
-            dict_users = cifar_noniid(dataset_train, config["num_users"])
-    elif config["dataset"] == 'shakespeare':
+            dict_users = cifar_noniid(dataset_train, config["modelParams"]["modelData"]["num_users"])
+    elif config["modelParams"]["modelData"]["dataset"] == 'shakespeare':
         dataset_train = ShakeSpeare(train=True)
         dataset_test = ShakeSpeare(train=False)
         dict_users = dataset_train.get_client_dic()
-        config["num_users"] = len(dict_users)
-        if config["iid"]:
+        config["modelParams"]["modelData"]["num_users"] = len(dict_users)
+        if config["modelParams"]["modelData"]["iid"]:
             exit('Error: ShakeSpeare dataset is naturally non-iid')
         else:
             print(
@@ -109,29 +108,29 @@ def start_server(config):
 
     net_glob = None
     # build model
-    if config["model"] == 'cnn' and config["dataset"] == 'cifar':
-        net_glob = CNNCifar(args=config).to(config["device"])
-    elif config["model"] == 'cnn' and (config["dataset"] == 'mnist'):
-        net_glob = CNNMnist(args=config).to(config["device"])
-    elif config["dataset"] == 'shakespeare' and config["model"] == 'lstm':
+    if config["modelParams"]["modelData"]["model"] == 'cnn' and config["modelParams"]["modelData"]["dataset"] == 'cifar':
+        net_glob = CNNCifar(args=config["modelParams"]["modelData"]).to(config["device"])
+    elif config["modelParams"]["modelData"]["model"] == 'cnn' and (config["modelParams"]["modelData"]["dataset"] == 'mnist'):
+        net_glob = CNNMnist(args=config["modelParams"]["modelData"]).to(config["device"])
+    elif config["modelParams"]["modelData"]["dataset"] == 'shakespeare' and config["modelParams"]["modelData"]["model"] == 'lstm':
         net_glob = CharLSTM().to(config["device"])
-    elif config["model"] == 'mlp':
+    elif config["modelParams"]["modelData"]["model"] == 'mlp':
         len_in = 1
         for x in img_size:
             len_in *= x
-        net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=config["num_classes"]).to(config["device"])
+        net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=config["modelParams"]["modelData"]["num_classes"]).to(config["device"])
     else:
         exit('Error: unrecognized model')
 
     # use opacus to wrap model to clip per sample gradient
-    if config["dp_mechanism"] != 'no_dp':
+    if config["modelParams"]["modelData"]["dp_mechanism"] != 'no_dp':
         net_glob = GradSampleModule(net_glob)
     print(net_glob)
     net_glob.train()  # 模型标识为训练状态
 
     # copy weights
     w_glob = net_glob.state_dict()
-    all_clients = list(range(config["num_users"]))
+    all_clients = list(range(config["modelParams"]["modelData"]["num_users"]))
 
     # training
     loss = 0
@@ -139,12 +138,20 @@ def start_server(config):
     acc_list = []
     loss_test = []
     loss_list = []
-    if config["serial"]:
-        clients = [LocalUpdateDPSerial(args=config, dataset=dataset_train, idxs=dict_users[i]) for i in
-                   range(config["num_users"])]
+    if config["modelParams"]["modelData"]["serial"]:
+        clients = [LocalUpdateDPSerial(args=config["modelParams"]["modelData"], dataset=dataset_train, idxs=dict_users[i]) for i in
+                   range(config["modelParams"]["modelData"]["num_users"])]
     else:
-        clients = [LocalUpdateDP(args=config, dataset=dataset_train, idxs=dict_users[i]) for i in
-                   range(config["num_users"])]
+        clients = [LocalUpdateDP(args=config["modelParams"]["modelData"], dataset=dataset_train, idxs=dict_users[i]) for i in
+                   range(config["modelParams"]["modelData"]["num_users"])]
+
+    # 创建socket对象
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # 绑定IP地址和端口号
+    server_socket.bind((config["baseConfig"]["modelControlUrl"], 12345))
+    # 开始监听
+    server_socket.listen(len(config["baseConfig"]["modelCalUrlList"]))
+    print("服务器启动，等待连接...")
 
     threads = []
     config['role'] = 'client'
@@ -155,49 +162,85 @@ def start_server(config):
             thread = threading.Thread(target=send_request, config=(client_url, data))
             threads.append(thread)
             thread.start()"""
+    # TODO 按照client数量动态链接
+    for entry in config['baseConfig']['modelCalUrlList']:
+        client_url = ""
 
-    for key in config:
+        user_id = int(entry['userId'])
+
+        url = entry['url']
+
+        is_initiator = entry['isInitiator']
+        # 实际用这个
+        """
+            client_url = f'http://{url}:5000/process_data'
+        thread = threading.Thread(target=send_request, args=(client_url, config))
+        threads.append(thread)
+        thread.start()"""
+        if user_id == 1:
+            client_url = f'http://{url}:5002/process_data'
+        elif user_id == 129:
+            client_url = f'http://{url}:5003/process_data'
+        thread = threading.Thread(target=send_request, args=(client_url, config))
+        threads.append(thread)
+        thread.start()
+
+    """for key in config["modelParams"]["modelData"]:
         if "client1" in key:
-            client_url = f'http://{config[key]}:5002/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, config))
+            client_url = f'http://{config["modelParams"]["modelData"][key]}:5002/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, config["modelParams"]["modelData"]))
             threads.append(thread)
             thread.start()
         if "client2" in key:
-            client_url = f'http://{config[key]}:5003/process_data'
-
-            thread = threading.Thread(target=send_request, args=(client_url, config))
+            client_url = f'http://{config["modelParams"]["modelData"][key]}:5003/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, config["modelParams"]["modelData"]))
             threads.append(thread)
-            thread.start()
-    # 创建socket对象
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # 绑定IP地址和端口号
-    server_socket.bind((config["server_ip"], 12345))
-    # 开始监听
-    server_socket.listen(2)
-    print("服务器启动，等待连接...")
+            thread.start()"""
 
-    # 接受两个客户端的连接
-    client1, addr1 = server_socket.accept()
-    print(f'客户端{addr1}已连接')
-    client2, addr2 = server_socket.accept()
-    print(f'客户端{addr2}已连接')
+    client_socket_list = []
+    connected_clients = 0
+    # 过滤出非isInitiator的model
+    non_initiators = [model_url for model_url in config["baseConfig"]["modelCalUrlList"] if
+                      not model_url["isInitiator"]]
+    # 动态接受客户端连接
+    for i, model_url in enumerate(non_initiators):
+        client_socket, addr = server_socket.accept()
+        connected_clients += 1
+        print(f'客户端{addr}已连接')
+        client_socket_list.append(client_socket)
+    app.logger.info(f"Total connected clients: {connected_clients}")
 
-    for iter in range(config["epochs"]):
+    for iter in range(config["modelParams"]["modelData"]["epochs"]):
         t_start = time.time()
         w_locals, loss_locals, weight_locals = [], [], []
-        client_model_mapping = {
+        client_model_mapping = {}
+        for i, model_url in enumerate(non_initiators):
+            client_model_mapping[model_url["url"]] = [clients[i], net_glob, loss]
+        """client_model_mapping = {
             config["client1_ip"]: [clients[0], net_glob, loss],
             config["client2_ip"]: [clients[1], net_glob, loss]
-        }
+        }"""
 
         # 向客户端发送数据
-        send_data(client1, pickle.dumps(client_model_mapping))
-        send_data(client2, pickle.dumps(client_model_mapping))
+        for client_socket in client_socket_list:
+            send_data(client_socket, pickle.dumps(client_model_mapping))
+            app.logger.info(f"Sent data to client: {client_socket_list}")
+        # send_data(client1, pickle.dumps(client_model_mapping))
+        # send_data(client2, pickle.dumps(client_model_mapping))
+        for client_socket in client_socket_list:
+            updated_data = pickle.loads(recv_data(client_socket))
+            for i, model_url in enumerate(config["baseConfig"]["modelCalUrlList"]):
+                if model_url["url"] in updated_data:
+                    client_model_mapping[model_url["url"]] = updated_data[model_url["url"]]
+                    model_and_loss = client_model_mapping[model_url["url"]]
+                    w_locals.append(copy.deepcopy(model_and_loss[1]))
+                    loss_locals.append(copy.deepcopy(model_and_loss[2]))
+                    weight_locals.append(len(dict_users[0]))
 
-        updated_data1 = pickle.loads(recv_data(client1))
-        updated_data2 = pickle.loads(recv_data(client2))
+        # updated_data1 = pickle.loads(recv_data(client1))
+        # updated_data2 = pickle.loads(recv_data(client2))
 
-        if config["client1_ip"] in updated_data1:
+        """if config["client1_ip"] in updated_data1:
             client_model_mapping[config["client1_ip"]] = updated_data1[config["client1_ip"]]
             model_and_loss = client_model_mapping[config["client1_ip"]]
             w_locals.append(copy.deepcopy(model_and_loss[1]))
@@ -209,12 +252,13 @@ def start_server(config):
             model_and_loss = client_model_mapping[config["client2_ip"]]
             w_locals.append(copy.deepcopy(model_and_loss[1]))
             loss_locals.append(copy.deepcopy(model_and_loss[2]))
-            weight_locals.append(len(dict_users[1]))
+            weight_locals.append(len(dict_users[1]))"""
+
         w_glob = FedWeightAvg(w_locals, weight_locals)
         net_glob.load_state_dict(w_glob)
 
         net_glob.eval()
-        acc_t, loss_t = test_img(net_glob, dataset_test, config)
+        acc_t, loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
         t_end = time.time()
         print("Round {:3d},Testing accuracy: {:.2f},Loss：{:.5f}, Time:  {:.2f}s".format(iter, acc_t, loss_t,
                                                                                         t_end - t_start))
@@ -225,11 +269,12 @@ def start_server(config):
         loss_list.append(loss_t)
 
     # 关闭连接
-    client1.close()
-    client2.close()
+    for client_socket in client_socket_list:
+        client_socket.close()
+
     server_socket.close()
 
-    model = CNNMnist(config)
+    model = CNNMnist(config["modelParams"]["modelData"])
     model.load_state_dict(torch.load('DP_model.pth', map_location=torch.device('cpu')))
     # 计算加密前后模型之间的Pearson相关性系数
     count = 0
@@ -300,6 +345,8 @@ def start_server(config):
 
 def start_client(config):
 
+    # get local ip
+    local_client_ip = '127.0.0.1'
     app.logger.info(f"Client received config data: {config}")
     # parse args
     random.seed(123)
@@ -310,12 +357,12 @@ def start_client(config):
 
     lock = threading.Lock()
 
-    config["device"] = torch.device('cuda:{}'.format(config["gpu"]) if torch.cuda.is_available() and config["gpu"] != -1 else 'cpu')
+    config["device"] = torch.device('cuda:{}'.format(config["modelParams"]["modelData"]["gpu"]) if torch.cuda.is_available() and config["modelParams"]["modelData"]["gpu"] != -1 else 'cpu')
 
     # 创建socket对象
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # 连接到服务器
-    client_socket.connect((config["server_ip"], 12345))
+    client_socket.connect((config["baseConfig"]["modelControlUrl"], 12345))
 
     while True:
         # 接收数据
@@ -324,14 +371,14 @@ def start_client(config):
             break
         data = pickle.loads(data)
 
-        model_and_loss = data[config["client2_ip"]]
+        model_and_loss = data[local_client_ip]
         w = model_and_loss[1]
         local = model_and_loss[0]
         print("客户端 2 正在处理数据......")
 
         # net_glob = CNNMnist(args=config).to(config["device"])
         trained_model, loss_value = local.train(net=copy.deepcopy(w).to(config["device"]))
-        data[config["client2_ip"]] = [model_and_loss[0], trained_model, loss_value]
+        data[local_client_ip] = [model_and_loss[0], trained_model, loss_value]
 
         print("客户端 2 训练结束，准备上传模型......")
         # 发送处理后的数据

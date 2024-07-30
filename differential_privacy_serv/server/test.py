@@ -6,7 +6,93 @@ BASE_URL = "http://127.0.0.1:5001"  # 请根据实际情况修改
 def send_data_and_get_response():
     # 构建要发送的JSON数据
     data = {
-    "epochs": 15,
+    "projectJobId": "1780926403611033645",
+    "role": "server",
+    "baseConfig": {
+        "modelControlUrl": "127.0.0.1",
+        "modelCalUrlList": [
+            {
+                "userId": "129",
+                "url": "127.0.0.1",
+                "isInitiator": False
+            },
+            {
+                "userId": "666",
+                "url": "127.0.0.1",
+                "isInitiator": True
+            },
+            {
+                "userId": "1",
+                "url": "127.0.0.1",
+                "isInitiator": False
+            }
+        ],
+        "platGwUrl": "http://localhost:48080"
+    },
+    "modelParams": {
+        "dataSet": {
+            "projectOrgans": [
+                {
+                    "userId": "129",
+                    "userType": 2,
+                    "resource": [
+                        {
+                            "id": "1780926403611033602",
+                            "dataSetName": "必填测试",
+                            "dataSetDesc": "23",
+                            "dataSetFilePath": None,
+                            "dataSetFileName": None,
+                            "dataSetFileUrl": "/Users/cuitianyu/model-serv/homomorphic_encryption_serv/client2/data/breast.csv",
+                            "visibility": 2,
+                            "visibilityUsers": "admin",
+                            "remark": None,
+                            "status": None,
+                            "creator": "129"
+                        }
+                    ]
+                },
+                {
+                    "userId": "666",
+                    "userType": 1,
+                    "resource": [
+                        {
+                            "id": "1780926403611023602",
+                            "dataSetName": "必填测试",
+                            "dataSetDesc": "23",
+                            "dataSetFilePath": None,
+                            "dataSetFileName": None,
+                            "dataSetFileUrl": "/Users/cuitianyu/model-serv/homomorphic_encryption_serv/server/data/breast.csv",
+                            "visibility": 2,
+                            "visibilityUsers": "admin",
+                            "remark": None,
+                            "status": None,
+                            "creator": "129"
+                        }
+                    ]
+                },
+                {
+                    "userId": "1",
+                    "userType": 2,
+                    "resource": [
+                        {
+                            "id": "1781142905056477185",
+                            "dataSetName": "测试更新",
+                            "dataSetDesc": "2324",
+                            "dataSetFilePath": None,
+                            "dataSetFileName": None,
+                            "dataSetFileUrl": "/Users/cuitianyu/model-serv/homomorphic_encryption_serv/client1/data/breast.csv",
+                            "visibility": 1,
+                            "visibilityUsers": "",
+                            "remark": None,
+                            "status": None,
+                            "creator": "1"
+                        }
+                    ]
+                }
+            ]
+        },
+        "modelData": {
+                "epochs": 15,
     "num_users": 2,
     "frac": 1,
     "bs": 64,
@@ -27,11 +113,9 @@ def send_data_and_get_response():
     "serial": False,
     "serial_bs": 128,
     "batch_size": 64,
-    "user": [0, 1],
-    "role": "server",
-    "client1_ip": "127.0.0.1",
-    "client2_ip": "127.0.0.1",
-    "server_ip": "127.0.0.1"
+    "user": [0, 1]
+        }
+    }
 }
     # 向 /process_data 端点发送POST请求，附带JSON数据
     response = requests.post(f"{BASE_URL}/process_data", json=data)
