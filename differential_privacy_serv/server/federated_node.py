@@ -35,12 +35,17 @@ def index():
 def process_data():
     # 获取请求中的JSON数据
     data = request.json
+    app.logger.info(f"Received request data: {data}")
+
     role = data.get('role')
     if role == 'server':
-        start_server(data)
+        response = start_server(data)
+        return jsonify(response), 200
     elif role == 'client':
         start_client(data)
-    return jsonify({"message": "Role assigned and process started"}), 200
+        return jsonify({"message": "Client process started"}), 200
+    else:
+        return jsonify({"message": "Invalid role"}), 400
 
 
 def start_server(config):
@@ -162,7 +167,7 @@ def start_server(config):
             thread = threading.Thread(target=send_request, config=(client_url, data))
             threads.append(thread)
             thread.start()"""
-    # TODO 按照client数量动态链接
+    # TODO 筛选出非initiator的
     for entry in config['baseConfig']['modelCalUrlList']:
         client_url = ""
 
@@ -171,31 +176,23 @@ def start_server(config):
         url = entry['url']
 
         is_initiator = entry['isInitiator']
-        # 实际用这个
-        """
+        if is_initiator:
+            continue
+        else:
+            # 实际用这个
+            """
             client_url = f'http://{url}:5000/process_data'
-        thread = threading.Thread(target=send_request, args=(client_url, config))
-        threads.append(thread)
-        thread.start()"""
-        if user_id == 1:
-            client_url = f'http://{url}:5002/process_data'
-        elif user_id == 129:
-            client_url = f'http://{url}:5003/process_data'
-        thread = threading.Thread(target=send_request, args=(client_url, config))
-        threads.append(thread)
-        thread.start()
-
-    """for key in config["modelParams"]["modelData"]:
-        if "client1" in key:
-            client_url = f'http://{config["modelParams"]["modelData"][key]}:5002/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, config["modelParams"]["modelData"]))
-            threads.append(thread)
-            thread.start()
-        if "client2" in key:
-            client_url = f'http://{config["modelParams"]["modelData"][key]}:5003/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, config["modelParams"]["modelData"]))
+            thread = threading.Thread(target=send_request, args=(client_url, config))
             threads.append(thread)
             thread.start()"""
+            if user_id == 1:
+                client_url = f'http://{url}:5002/process_data'
+            elif user_id == 129:
+                client_url = f'http://{url}:5003/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, config))
+            threads.append(thread)
+            thread.start()
+
 
     client_socket_list = []
     connected_clients = 0
@@ -216,10 +213,6 @@ def start_server(config):
         client_model_mapping = {}
         for i, model_url in enumerate(non_initiators):
             client_model_mapping[model_url["url"]] = [clients[i], net_glob, loss]
-        """client_model_mapping = {
-            config["client1_ip"]: [clients[0], net_glob, loss],
-            config["client2_ip"]: [clients[1], net_glob, loss]
-        }"""
 
         # 向客户端发送数据
         for client_socket in client_socket_list:
@@ -239,21 +232,6 @@ def start_server(config):
 
         # updated_data1 = pickle.loads(recv_data(client1))
         # updated_data2 = pickle.loads(recv_data(client2))
-
-        """if config["client1_ip"] in updated_data1:
-            client_model_mapping[config["client1_ip"]] = updated_data1[config["client1_ip"]]
-            model_and_loss = client_model_mapping[config["client1_ip"]]
-            w_locals.append(copy.deepcopy(model_and_loss[1]))
-            loss_locals.append(copy.deepcopy(model_and_loss[2]))
-            weight_locals.append(len(dict_users[0]))
-
-        if config["client2_ip"] in updated_data2:
-            client_model_mapping[config["client2_ip"]] = updated_data2[config["client2_ip"]]
-            model_and_loss = client_model_mapping[config["client2_ip"]]
-            w_locals.append(copy.deepcopy(model_and_loss[1]))
-            loss_locals.append(copy.deepcopy(model_and_loss[2]))
-            weight_locals.append(len(dict_users[1]))"""
-
         w_glob = FedWeightAvg(w_locals, weight_locals)
         net_glob.load_state_dict(w_glob)
 
@@ -340,7 +318,7 @@ def start_server(config):
         "message": "Data processed successfully"
     }
     # 返回JSON响应
-    return jsonify(response), 200
+    return response
 
 
 def start_client(config):
