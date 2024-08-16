@@ -65,9 +65,6 @@ def start_server(config):
 
     config["device"] = torch.device(
         'cuda:{}'.format(config["modelParams"]["modelData"]["gpu"]) if torch.cuda.is_available() and config["modelParams"]["modelData"]["gpu"] != -1 else 'cpu')
-    dict_users = {}
-    dataset_train, dataset_test = None, None
-
     # load dataset and split users
     if config["modelParams"]["modelData"]["dataset"] == 'mnist':
         trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
@@ -110,7 +107,6 @@ def start_server(config):
     else:
         exit('Error: unrecognized dataset')
     img_size = dataset_train[0][0].shape
-
     net_glob = None
     # build model
     if config["modelParams"]["modelData"]["model"] == 'cnn' and config["modelParams"]["modelData"]["dataset"] == 'cifar':
@@ -143,12 +139,12 @@ def start_server(config):
     acc_list = []
     loss_test = []
     loss_list = []
-    if config["modelParams"]["modelData"]["serial"]:
-        clients = [LocalUpdateDPSerial(args=config["modelParams"]["modelData"], dataset=dataset_train, idxs=dict_users[i]) for i in
-                   range(config["modelParams"]["modelData"]["num_users"])]
-    else:
-        clients = [LocalUpdateDP(args=config["modelParams"]["modelData"], dataset=dataset_train, idxs=dict_users[i]) for i in
-                   range(config["modelParams"]["modelData"]["num_users"])]
+    # if config["modelParams"]["modelData"]["serial"]:
+    #     clients = [LocalUpdateDPSerial(args=config["modelParams"]["modelData"], dataset=dataset_train, idxs=dict_users[i]) for i in
+    #                range(config["modelParams"]["modelData"]["num_users"])]
+    # else:
+    #     clients = [LocalUpdateDP(args=config["modelParams"]["modelData"], dataset=dataset_train, idxs=dict_users[i]) for i in
+    #                range(config["modelParams"]["modelData"]["num_users"])]
 
     # 创建socket对象
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -167,7 +163,7 @@ def start_server(config):
             thread = threading.Thread(target=send_request, config=(client_url, data))
             threads.append(thread)
             thread.start()"""
-    # TODO 数据集
+
     for entry in config['baseConfig']['modelCalUrlList']:
         client_url = ""
 
@@ -193,7 +189,6 @@ def start_server(config):
             threads.append(thread)
             thread.start()
 
-
     client_socket_list = []
     connected_clients = 0
     # 过滤出非isInitiator的model
@@ -209,10 +204,10 @@ def start_server(config):
 
     for iter in range(config["modelParams"]["modelData"]["epochs"]):
         t_start = time.time()
-        w_locals, loss_locals, weight_locals = [], [], []
+        w_locals, loss_locals, weight_locals = [], [], [0, 0]
         client_model_mapping = {}
         for i, model_url in enumerate(non_initiators):
-            client_model_mapping[model_url["url"]] = [clients[i], net_glob, loss]
+            client_model_mapping[model_url["url"]] = [weight_locals[i], net_glob, loss]
 
         # 向客户端发送数据
         for client_socket in client_socket_list:
@@ -228,7 +223,7 @@ def start_server(config):
                     model_and_loss = client_model_mapping[model_url["url"]]
                     w_locals.append(copy.deepcopy(model_and_loss[1]))
                     loss_locals.append(copy.deepcopy(model_and_loss[2]))
-                    weight_locals.append(len(dict_users[0]))
+                    weight_locals.append(model_and_loss[0])
 
         # updated_data1 = pickle.loads(recv_data(client1))
         # updated_data2 = pickle.loads(recv_data(client2))
@@ -336,6 +331,48 @@ def start_client(config):
     lock = threading.Lock()
 
     config["device"] = torch.device('cuda:{}'.format(config["modelParams"]["modelData"]["gpu"]) if torch.cuda.is_available() and config["modelParams"]["modelData"]["gpu"] != -1 else 'cpu')
+    # load dataset and split users
+    if config["modelParams"]["modelData"]["dataset"] == 'mnist':
+        trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
+        dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans_mnist)
+        dataset_test = datasets.MNIST('./data/mnist/', train=False, download=True, transform=trans_mnist)
+        config["modelParams"]["modelData"]["num_channels"] = 1
+        # sample users
+        if config["modelParams"]["modelData"]["iid"]:
+            dict_users = mnist_iid(dataset_train, config["modelParams"]["modelData"]["num_users"])
+        else:
+            dict_users = mnist_noniid(dataset_train, config["modelParams"]["modelData"]["num_users"])
+    elif config["modelParams"]["modelData"]["dataset"] == 'cifar':
+        config["modelParams"]["modelData"]["num_channels"] = 3
+        trans_cifar_train = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+        trans_cifar_test = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        ])
+        dataset_train = datasets.CIFAR10('./data/cifar', train=True, download=True, transform=trans_cifar_train)
+        dataset_test = datasets.CIFAR10('./data/cifar', train=False, download=True, transform=trans_cifar_test)
+        if config["modelParams"]["modelData"]["iid"]:
+            dict_users = cifar_iid(dataset_train, config["modelParams"]["modelData"]["num_users"])
+        else:
+            dict_users = cifar_noniid(dataset_train, config["modelParams"]["modelData"]["num_users"])
+    elif config["modelParams"]["modelData"]["dataset"] == 'shakespeare':
+        dataset_train = ShakeSpeare(train=True)
+        dataset_test = ShakeSpeare(train=False)
+        dict_users = dataset_train.get_client_dic()
+        config["modelParams"]["modelData"]["num_users"] = len(dict_users)
+        if config["modelParams"]["modelData"]["iid"]:
+            exit('Error: ShakeSpeare dataset is naturally non-iid')
+        else:
+            print(
+                "Warning: The ShakeSpeare dataset is naturally non-iid, you do not need to specify iid or non-iid")
+    else:
+        exit('Error: unrecognized dataset')
+    img_size = dataset_train[0][0].shape
 
     # 创建socket对象
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -351,12 +388,16 @@ def start_client(config):
 
         model_and_loss = data[local_client_ip]
         w = model_and_loss[1]
-        local = model_and_loss[0]
+
+        if config["modelParams"]["modelData"]["serial"]:
+            local = LocalUpdateDPSerial(args=config["modelParams"]["modelData"], dataset=dataset_train, idxs=dict_users[0])
+        else:
+            local = LocalUpdateDP(args=config["modelParams"]["modelData"], dataset=dataset_train, idxs=dict_users[0])
         print("客户端 2 正在处理数据......")
 
         # net_glob = CNNMnist(args=config).to(config["device"])
         trained_model, loss_value = local.train(net=copy.deepcopy(w).to(config["device"]))
-        data[local_client_ip] = [model_and_loss[0], trained_model, loss_value]
+        data[local_client_ip] = [len(dict_users[0]), trained_model, loss_value]
 
         print("客户端 2 训练结束，准备上传模型......")
         # 发送处理后的数据

@@ -93,7 +93,7 @@ def send_data_and_get_response():
         },
         "modelData": {
                 "epochs": 15,
-    "num_users": 2,
+    "num_users": 1,
     "frac": 1,
     "bs": 64,
     "lr": 0.1,
