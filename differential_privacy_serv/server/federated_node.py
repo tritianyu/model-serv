@@ -167,7 +167,7 @@ def start_server(config):
             thread = threading.Thread(target=send_request, config=(client_url, data))
             threads.append(thread)
             thread.start()"""
-    # TODO 筛选出非initiator的
+    # TODO 数据集
     for entry in config['baseConfig']['modelCalUrlList']:
         client_url = ""
 
