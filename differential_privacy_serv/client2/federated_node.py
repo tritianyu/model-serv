@@ -217,13 +217,13 @@ def start_server(config):
         # send_data(client2, pickle.dumps(client_model_mapping))
         for client_socket in client_socket_list:
             updated_data = pickle.loads(recv_data(client_socket))
-            for i, model_url in enumerate(config["baseConfig"]["modelCalUrlList"]):
+            for i, model_url in enumerate(non_initiators):
                 if model_url["url"] in updated_data:
                     client_model_mapping[model_url["url"]] = updated_data[model_url["url"]]
                     model_and_loss = client_model_mapping[model_url["url"]]
                     w_locals.append(copy.deepcopy(model_and_loss[1]))
                     loss_locals.append(copy.deepcopy(model_and_loss[2]))
-                    weight_locals.append(model_and_loss[0])
+                    weight_locals[i] = model_and_loss[0]
 
         # updated_data1 = pickle.loads(recv_data(client1))
         # updated_data2 = pickle.loads(recv_data(client2))
