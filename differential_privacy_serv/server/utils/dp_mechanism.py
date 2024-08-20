@@ -1,5 +1,5 @@
 import numpy as np
-from tensorflow_privacy.compute_noise_from_budget_lib import compute_noise
+from differential_privacy_serv.server.tensorflow_privacy.compute_noise_from_budget_lib import compute_noise
 
 
 def cal_sensitivity(lr, clip, dataset_size):

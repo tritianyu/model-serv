@@ -25,8 +25,8 @@ try:
 except ImportError:
     Mapping = dict
 
-from encoding import EncodedNumber
-from util import invert, powmod, getprimeover, isqrt
+from .encoding import EncodedNumber
+from .util import invert, powmod, getprimeover, isqrt
 
 DEFAULT_KEYSIZE = 2048
 

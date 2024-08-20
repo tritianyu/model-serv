@@ -4,7 +4,7 @@ from collections import defaultdict
 import numpy as np
 from torch.utils.data import Dataset
 import torch
-from utils.language_utils import word_to_indices, letter_to_vec
+from differential_privacy_serv.server.utils.language_utils import word_to_indices, letter_to_vec
 
 
 class FEMNIST(Dataset):

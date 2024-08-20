@@ -93,7 +93,7 @@ def send_data_and_get_response():
             },
             "modelData": {
                 "modelId": "LR",
-                "securityProtocol": "同态加密",
+                "securityProtocol": "he",
                 "no_models": 3,
                 "global_epochs": 3,
                 "local_epochs": 2,

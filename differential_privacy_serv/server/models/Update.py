@@ -4,7 +4,7 @@
 
 import torch
 from torch import nn, autograd
-from utils.dp_mechanism import cal_sensitivity, cal_sensitivity_MA, Laplace, Gaussian_Simple, Gaussian_MA
+from differential_privacy_serv.server.utils.dp_mechanism import cal_sensitivity, cal_sensitivity_MA, Laplace, Gaussian_Simple, Gaussian_MA
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 import random

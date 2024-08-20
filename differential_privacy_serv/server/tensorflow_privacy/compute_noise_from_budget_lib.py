@@ -9,8 +9,8 @@ import math
 from absl import app
 from scipy.optimize import bisect
 
-from tensorflow_privacy.rdp_accountant import compute_rdp  # pylint: disable=g-import-not-at-top
-from tensorflow_privacy.rdp_accountant import get_privacy_spent
+from differential_privacy_serv.server.tensorflow_privacy.rdp_accountant import compute_rdp  # pylint: disable=g-import-not-at-top
+from differential_privacy_serv.server.tensorflow_privacy.rdp_accountant import get_privacy_spent
 
 
 def apply_dp_sgd_analysis(q, sigma, steps, orders, delta):
