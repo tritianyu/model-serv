@@ -221,7 +221,11 @@ def start_server(config):
                 if model_url["url"] in updated_data:
                     client_model_mapping[model_url["url"]] = updated_data[model_url["url"]]
                     model_and_loss = client_model_mapping[model_url["url"]]
-                    w_locals.append(copy.deepcopy(model_and_loss[1]))
+                    # 只在 w_locals 中添加对应的元素，确保长度与 weight_locals 一致
+                    if len(weight_locals) == len(w_locals):  # 检查长度是否相等
+                        w_locals[len(weight_locals) - 1] = copy.deepcopy(model_and_loss[1])  # 替换最后一个元素
+                    else:
+                        w_locals.append(copy.deepcopy(model_and_loss[1]))  # 添加一个元素
                     loss_locals.append(copy.deepcopy(model_and_loss[2]))
                     weight_locals[i] = model_and_loss[0]
 
