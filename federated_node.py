@@ -606,7 +606,7 @@ def start_dp_server(config):
     server_socket.close()
 
     model = CNNMnist(config["modelParams"]["modelData"])
-    model.load_state_dict(torch.load('DP_model.pth', map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load('differential_privacy_serv/server/DP_model.pth', map_location=torch.device('cpu')))
     # 计算加密前后模型之间的Pearson相关性系数
     count = 0
     params_diff = []
@@ -772,7 +772,7 @@ def publish_reasoning():
     data = request.json
     app.logger.info(f"Received request data: {data}")
     encryption = data['modelParams']['modelData'].get('securityProtocol')
-
+    pred_x = []
     if encryption == 'he':
         # 读取 JSON 文件
         filename = f'saved_models/he_models/{data["projectJobId"]}results_HE.json'
@@ -783,7 +783,7 @@ def publish_reasoning():
         global_model_weights = json_data["model_parameter"]
 
         # 读取推理所需数据
-        pred_x = []
+
         with open(data["projectOrgans"]["resource"]["dataSetFilePath"]) as fin:
             for line in fin:
                 data = line.split(',')
@@ -800,8 +800,25 @@ def publish_reasoning():
         })
 
     elif encryption == 'dp':
-        # 对于 dp 的处理逻辑
-        pass
+        # 读取推理所需数据
+        with open(data["projectOrgans"]["resource"]["dataSetFilePath"]) as fin:
+            for line in fin:
+                data = line.split(',')
+                pred_x.append([float(e) for e in data])
+
+        pred_x = np.array(pred_x)
+        model = CNNMnist(data["modelData"])
+        model.load_state_dict(torch.load(f'saved_models/dp_models/{data["projectJobId"]}dp_global_model.pth', map_location=torch.device('cpu')))
+        model.eval()
+        with torch.no_grad():
+            input_tensor = torch.tensor(pred_x).float()
+            output = model(input_tensor)
+            prediction = output.numpy()
+        return jsonify({
+            "code": 200,
+            "msg": "success",
+            "data": {"prediction": prediction.tolist()}  # 将预测结果转换为列表以便序列化为 JSON
+        })
 
     else:
         return jsonify({"code": 400, "msg": "Invalid security protocol for reasoning", "data": {}})
