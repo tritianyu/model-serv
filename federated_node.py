@@ -5,7 +5,6 @@ import pickle
 import random
 import socket
 import time
-
 import copy
 import numpy as np
 from torchvision import datasets, transforms
@@ -304,7 +303,7 @@ def start_he_server(config):
                      "model_parameter": global_model_weights}
 
         if e == config["modelParams"]["modelData"]["global_epochs"] - 1:
-            filename = './results/results_HE.json'
+            filename = f'saved_models/he_models/{config["projectJobId"]}results_HE.json'
             with open(filename, 'w') as file_obj:
                 json.dump(json_data, file_obj, indent=4)
             response = {"processed_data": json_data, "message": "Data processed successfully"}
@@ -317,14 +316,14 @@ def start_he_server(config):
         client_socket.close()
     server_socket.close()
 
-    plt.figure()
-    x = range(1, len(test_acc) + 1, 1)
-    plt.plot(x, test_acc, color='r', marker='.')
-    plt.ylabel('Accuracy')
-    plt.xlabel('Epochs')
-    plt.title('Federated Learning with HE')
-    plt.savefig('./results/acc.png')
-    plt.show()
+    # plt.figure()
+    # x = range(1, len(test_acc) + 1, 1)
+    # plt.plot(x, test_acc, color='r', marker='.')
+    # plt.ylabel('Accuracy')
+    # plt.xlabel('Epochs')
+    # plt.title('Federated Learning with HE')
+    # plt.savefig('./results/acc.png')
+    # plt.show()
 
 
 def start_he_client(config):
@@ -368,10 +367,10 @@ def start_he_client(config):
     client_config = config_data[client1_id]
     data_slice = client_config["data_slice"]
     data_slice_y = client_config["data_slice_y"]
-    print(data_slice)
+    # print(data_slice)
     # 使用 eval() 函数来获取实际的数据分片
     train_data_x = eval(data_slice)
-    print(train_data_x)
+    # print(train_data_x)
     train_data_y = eval(data_slice_y)
     client_1 = Client(
         client_config["config"],
@@ -481,7 +480,7 @@ def start_dp_server(config):
     # use opacus to wrap model to clip per sample gradient
     if config["modelParams"]["modelData"]["dp_mechanism"] != 'no_dp':
         net_glob = GradSampleModule(net_glob)
-    print(net_glob)
+    # print(net_glob)
     net_glob.train()  # 模型标识为训练状态
 
     # copy weights
@@ -659,7 +658,7 @@ def start_dp_server(config):
 
     # os.system('pause')
     # 保存模型
-    torch.save(net_glob.state_dict(), 'global_model.pth')
+    torch.save(net_glob.state_dict(), f'saved_models/dp_models/{config["projectJobId"]}dp_global_model.pth')
 
     conf_file_path = 'results/output_DP.json'
     if os.path.exists(conf_file_path):
@@ -765,6 +764,47 @@ def start_dp_client(config):
         print("模型上传完毕\n")
 
     client_socket.close()
+
+
+@app.route('/publishReasoning', methods=['POST'])
+def publish_reasoning():
+    # 获取请求中的JSON数据
+    data = request.json
+    app.logger.info(f"Received request data: {data}")
+    encryption = data['modelParams']['modelData'].get('securityProtocol')
+
+    if encryption == 'he':
+        # 读取 JSON 文件
+        filename = f'saved_models/he_models/{data["projectJobId"]}results_HE.json'
+        with open(filename, 'r') as file_obj:
+            json_data = json.load(file_obj)
+
+        # 提取模型参数
+        global_model_weights = json_data["model_parameter"]
+
+        # 读取推理所需数据
+        pred_x = []
+        with open(data["projectOrgans"]["resource"]["dataSetFilePath"]) as fin:
+            for line in fin:
+                data = line.split(',')
+                pred_x.append([float(e) for e in data])
+
+        pred_x = np.array(pred_x)
+        prediction = pred_x.dot(global_model_weights)
+
+        # 返回结果
+        return jsonify({
+            "code": 200,
+            "msg": "success",
+            "data": {"prediction": prediction.tolist()}  # 将预测结果转换为列表以便序列化为 JSON
+        })
+
+    elif encryption == 'dp':
+        # 对于 dp 的处理逻辑
+        pass
+
+    else:
+        return jsonify({"code": 400, "msg": "Invalid security protocol for reasoning", "data": {}})
 
 
 def get_local_ip():

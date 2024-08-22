@@ -26,7 +26,6 @@ def decrypt_matrix(private_key, x):
 	return ret 
 
 
-		
 class LR_Model(object):
 
 	def __init__ (self, public_key, w_size=None, w=None, encrypted=False):
