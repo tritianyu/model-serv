@@ -10,6 +10,7 @@ import numpy as np
 import random
 from sklearn import metrics
 
+
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs):
         self.dataset = dataset  # 原始数据集
@@ -21,6 +22,7 @@ class DatasetSplit(Dataset):
     def __getitem__(self, item):
         image, label = self.dataset[self.idxs[item]]  # 获取指定索引的样本
         return image, label  # 返回样本的图像和标签
+
 
 class LocalUpdateDP(object):
     def __init__(self, args, dataset=None, idxs=None):
@@ -61,7 +63,7 @@ class LocalUpdateDP(object):
             return Gaussian_Simple(epsilon=epsilon_single_query, delta=delta_single_query)
 
         # 检查选择的差分隐私机制是否为动量加法（MA）机制
-        elif self.args["dp_mechanism "]== 'MA':
+        elif self.args["dp_mechanism "] == 'MA':
             # 返回一个具有给定参数的 MA（动量加法）噪声生成器
             return Gaussian_MA(epsilon=self.args["dp_epsilon"], delta=self.args["dp_delta"], q=self.args["dp_sample"],
                                epoch=self.times)
@@ -96,7 +98,6 @@ class LocalUpdateDP(object):
 
         self.lr = scheduler.get_last_lr()[0]  # 获取最后一个学习率
         return net.state_dict(), loss_client  # 返回训练后的模型参数和最终的损失值
-
 
     def clip_gradients(self, net):
         # 根据选择的差分隐私机制进行梯度裁剪

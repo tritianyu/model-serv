@@ -106,3 +106,25 @@ class CharLSTM(nn.Module):
         x, hidden = self.lstm(x)
         x = self.drop(x)
         return self.out(x[:, -1, :])
+
+
+class LSTMPredictor(nn.Module):
+    def __init__(self, input_size=8, hidden_size=64, output_size=1, num_layers=1):
+        super().__init__()
+        # 定义 LSTM 层，输入为时间步的特征维度，隐藏层单元数，层数为可配置
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        # 定义全连接层，用于将 LSTM 的输出映射到最终的输出维度
+        self.out = nn.Linear(hidden_size, output_size)
+        # 激活函数使用 ReLU
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        # LSTM expects input of shape (batch_size, sequence_length, input_size)
+        # LSTM 的输入形状为 (batch_size, 时间步, 特征维度)
+        x, _ = self.lstm(x)
+        # 取最后一个时间步的输出
+        x = x[:, -1, :]
+        # 全连接层 + 激活函数
+        x = self.act(x)
+        x = self.out(x)
+        return x
