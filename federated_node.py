@@ -5,6 +5,7 @@ import pickle
 import random
 import socket
 import time
+
 import copy
 import numpy as np
 from torchvision import datasets, transforms
@@ -48,7 +49,7 @@ class Server(object):
             self.global_model.encrypt_weights[id] = self.global_model.encrypt_weights[id] + update_per_layer
 
     def model_eval(self):
-
+        total_relative_error = 0.0
         total_loss = 0.0
         correct = 0
         dataset_size = 0
@@ -71,21 +72,27 @@ class Server(object):
 
             wxs = x.dot(self.global_model.weights)
 
-            pred_y = [1.0 / (1 + np.exp(-wx)) for wx in wxs]
-
-            # print(pred_y)
-
-            pred_y = np.array([1 if pred > 0.5 else -1 for pred in pred_y]).reshape((-1, 1))
-
+            # pred_y = [1.0 / (1 + np.exp(-wx)) for wx in wxs]
+            #
+            # # print(pred_y)
+            #
+            # pred_y = np.array([1 if pred > 0.5 else -1 for pred in pred_y]).reshape((-1, 1))
+            pred_y = wxs
             # print(y)
             # print(pred_y)
-            correct += np.sum(y == pred_y)
+            # correct += np.sum(y == pred_y)
+            # 计算相对误差
+            relative_error = np.abs((pred_y - y) / y)
+            total_relative_error += np.sum(relative_error)
 
         # print(correct, dataset_size)
-        acc = 100.0 * (float(correct) / float(dataset_size))
+        # acc = 100.0 * (float(correct) / float(dataset_size))
         # total_loss = total_loss / dataset_size
+        # 计算平均相对误差
+        mean_relative_error = total_relative_error / dataset_size
+        accuracy = 100.0 * mean_relative_error
 
-        return acc, self.global_model.weights
+        return accuracy, self.global_model.weights
 
     @staticmethod
     def re_encrypt(w):
@@ -196,50 +203,56 @@ def start_he_server(config):
     app.logger.info(f"Server received config data: {config}")
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind((config["baseConfig"]["modelControlUrl"], 12345))
-    server_socket.listen(len(config["baseConfig"]["modelCalUrlList"]))
-    print("服务器启动，等待连接...")
+    # server_socket.bind((config["baseConfig"]["modelControlUrl"], 12345))
+    try:
+        server_socket.bind(("0.0.0.0", 12345))
+        server_socket.listen(len(config["baseConfig"]["modelCalUrlList"]))
+        print("服务器启动，等待连接...")
 
-    config['role'] = 'client'
-    threads = []
+        config['role'] = 'client'
+        threads = []
 
-    for entry in config['baseConfig']['modelCalUrlList']:
-        client_url = ""
+        for entry in config['baseConfig']['modelCalUrlList']:
+            client_url = ""
 
-        user_id = int(entry['userId'])
+            user_id = int(entry['userId'])
 
-        url = entry['url']
+            url = entry['url']
 
-        is_initiator = entry['isInitiator']
-        if is_initiator:
-            dataset_file_url = None
-            for organ in config["modelParams"]["dataSet"]["projectOrgans"]:
-                if int(organ["userId"]) == user_id:
-                    dataset_file_url = organ["resource"][0]["dataSetFileUrl"]
-                    break
-            if dataset_file_url:
-                train_datasets, eval_datasets = read_dataset(dataset_file_url)
-                server = Server(config, eval_datasets)
-                test_acc = []
-                train_size = train_datasets[0].shape[0]
-                per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
+            is_initiator = entry['isInitiator']
+            if is_initiator:
+                dataset_file_url = None
+                for organ in config["modelParams"]["dataSet"]["projectOrgans"]:
+                    if int(organ["userId"]) == user_id:
+                        dataset_file_url = organ["resource"][0]["dataSetFilePath"]
+                        break
+                if dataset_file_url:
+                    train_datasets, eval_datasets = read_dataset(dataset_file_url)
+                    server = Server(config, eval_datasets)
+                    test_acc = []
+                    train_size = train_datasets[0].shape[0]
+                    per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
+                else:
+                    app.logger.error(f"No dataset_file_url found for user_id: {user_id}")
+                    continue
             else:
-                app.logger.error(f"No dataset_file_url found for user_id: {user_id}")
-                continue
-        else:
-            # 实际用这个
-            """
-                client_url = f'http://{url}:5000/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, config))
-            threads.append(thread)
-            thread.start()"""
-            if user_id == 1:
-                client_url = f'http://{url}:5001/process_data'
-            elif user_id == 129:
-                client_url = f'http://{url}:5003/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, config))
-            threads.append(thread)
-            thread.start()
+                # 实际用这个
+                """
+                    client_url = f'http://{url}:5000/process_data'
+                thread = threading.Thread(target=send_request, args=(client_url, config))
+                threads.append(thread)
+                thread.start()"""
+                if user_id == 131:
+                    client_url = f'http://{url}:5001/process_data'
+                elif user_id == 132:
+                    client_url = f'http://{url}:5003/process_data'
+                thread = threading.Thread(target=send_request, args=(client_url, config))
+                threads.append(thread)
+                thread.start()
+    except Exception as e:
+        app.logger.error(f"Error occurred while starting he server: {e}")
+        server_socket.close()
+        print("服务器和所有客户端连接已关闭")
 
     clients = []
     instances = {}
@@ -303,7 +316,7 @@ def start_he_server(config):
                      "model_parameter": global_model_weights}
 
         if e == config["modelParams"]["modelData"]["global_epochs"] - 1:
-            filename = f'saved_models/he_models/{config["projectJobId"]}results_HE.json'
+            filename = './results/results_HE.json'
             with open(filename, 'w') as file_obj:
                 json.dump(json_data, file_obj, indent=4)
             response = {"processed_data": json_data, "message": "Data processed successfully"}
@@ -316,14 +329,14 @@ def start_he_server(config):
         client_socket.close()
     server_socket.close()
 
-    # plt.figure()
-    # x = range(1, len(test_acc) + 1, 1)
-    # plt.plot(x, test_acc, color='r', marker='.')
-    # plt.ylabel('Accuracy')
-    # plt.xlabel('Epochs')
-    # plt.title('Federated Learning with HE')
-    # plt.savefig('./results/acc.png')
-    # plt.show()
+    plt.figure()
+    x = range(1, len(test_acc) + 1, 1)
+    plt.plot(x, test_acc, color='r', marker='.')
+    plt.ylabel('Accuracy')
+    plt.xlabel('Epochs')
+    plt.title('Federated Learning with HE')
+    plt.savefig('./results/acc.png')
+    plt.show()
 
 
 def start_he_client(config):
@@ -341,13 +354,13 @@ def start_he_client(config):
     user_id = matching_entry['userId']
     for organ in config['modelParams']['dataSet']['projectOrgans']:
         if organ['userId'] == user_id:
-            dataset_file_url = organ['resource'][0]['dataSetFileUrl']
+            dataset_file_url = organ['resource'][0]['dataSetFilePath']
             break
 
     train_datasets, eval_datasets = read_dataset(dataset_file_url)
 
     train_size = train_datasets[0].shape[0]
-    per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
+    per_client_size = int(train_size / int(config["modelParams"]["modelData"]["no_models"]))
 
     # 创建socket对象
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -367,10 +380,10 @@ def start_he_client(config):
     client_config = config_data[client1_id]
     data_slice = client_config["data_slice"]
     data_slice_y = client_config["data_slice_y"]
-    # print(data_slice)
+    print(data_slice)
     # 使用 eval() 函数来获取实际的数据分片
     train_data_x = eval(data_slice)
-    # print(train_data_x)
+    print(train_data_x)
     train_data_y = eval(data_slice_y)
     client_1 = Client(
         client_config["config"],
@@ -480,7 +493,7 @@ def start_dp_server(config):
     # use opacus to wrap model to clip per sample gradient
     if config["modelParams"]["modelData"]["dp_mechanism"] != 'no_dp':
         net_glob = GradSampleModule(net_glob)
-    # print(net_glob)
+    print(net_glob)
     net_glob.train()  # 模型标识为训练状态
 
     # copy weights
@@ -606,7 +619,7 @@ def start_dp_server(config):
     server_socket.close()
 
     model = CNNMnist(config["modelParams"]["modelData"])
-    model.load_state_dict(torch.load('differential_privacy_serv/server/DP_model.pth', map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load('DP_model.pth', map_location=torch.device('cpu')))
     # 计算加密前后模型之间的Pearson相关性系数
     count = 0
     params_diff = []
@@ -658,7 +671,7 @@ def start_dp_server(config):
 
     # os.system('pause')
     # 保存模型
-    torch.save(net_glob.state_dict(), f'saved_models/dp_models/{config["projectJobId"]}dp_global_model.pth')
+    torch.save(net_glob.state_dict(), 'global_model.pth')
 
     conf_file_path = 'results/output_DP.json'
     if os.path.exists(conf_file_path):
@@ -764,64 +777,6 @@ def start_dp_client(config):
         print("模型上传完毕\n")
 
     client_socket.close()
-
-
-@app.route('/publishReasoning', methods=['POST'])
-def publish_reasoning():
-    # 获取请求中的JSON数据
-    data = request.json
-    app.logger.info(f"Received request data: {data}")
-    encryption = data['modelParams']['modelData'].get('securityProtocol')
-    pred_x = []
-    if encryption == 'he':
-        # 读取 JSON 文件
-        filename = f'saved_models/he_models/{data["projectJobId"]}results_HE.json'
-        with open(filename, 'r') as file_obj:
-            json_data = json.load(file_obj)
-
-        # 提取模型参数
-        global_model_weights = json_data["model_parameter"]
-
-        # 读取推理所需数据
-
-        with open(data["projectOrgans"]["resource"]["dataSetFilePath"]) as fin:
-            for line in fin:
-                data = line.split(',')
-                pred_x.append([float(e) for e in data])
-
-        pred_x = np.array(pred_x)
-        prediction = pred_x.dot(global_model_weights)
-
-        # 返回结果
-        return jsonify({
-            "code": 200,
-            "msg": "success",
-            "data": {"prediction": prediction.tolist()}  # 将预测结果转换为列表以便序列化为 JSON
-        })
-
-    elif encryption == 'dp':
-        # 读取推理所需数据
-        with open(data["projectOrgans"]["resource"]["dataSetFilePath"]) as fin:
-            for line in fin:
-                data = line.split(',')
-                pred_x.append([float(e) for e in data])
-
-        pred_x = np.array(pred_x)
-        model = CNNMnist(data["modelData"])
-        model.load_state_dict(torch.load(f'saved_models/dp_models/{data["projectJobId"]}dp_global_model.pth', map_location=torch.device('cpu')))
-        model.eval()
-        with torch.no_grad():
-            input_tensor = torch.tensor(pred_x).float()
-            output = model(input_tensor)
-            prediction = output.numpy()
-        return jsonify({
-            "code": 200,
-            "msg": "success",
-            "data": {"prediction": prediction.tolist()}  # 将预测结果转换为列表以便序列化为 JSON
-        })
-
-    else:
-        return jsonify({"code": 400, "msg": "Invalid security protocol for reasoning", "data": {}})
 
 
 def get_local_ip():

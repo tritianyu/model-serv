@@ -1,23 +1,26 @@
 import numpy as np
 import struct
+import pandas as pd
 
 
 def read_dataset(file_path):
 	data_X, data_Y = [], []
+	df = pd.read_excel(file_path)
+	# 假设 Y 是最后一列，X 是前面的列
+	data_X = df.iloc[:, 1:-1].values
+	data_Y = df.iloc[:, -1].values  # 取最后一列作为 Y
 	
-	with open(file_path) as fin:
-		for line in fin:
-			data = line.split(',')
-			data_X.append([float(e) for e in data[:-1]])
-			if int(data[-1]) == 1:
-				data_Y.append(1)
-			else:
-				data_Y.append(-1)
+	# with open(file_path) as fin:
+	# 	for line in fin:
+	# 		data = line.split(',')
+	# 		data_X.append([float(e) for e in data[:-1]])
+	# 		if int(data[-1]) == 1:
+	# 			data_Y.append(1)
+	# 		else:
+	# 			data_Y.append(-1)
 	
 	data_X = np.array(data_X)
 	data_Y = np.array(data_Y)
-	
-
 	
 	idx = np.arange(data_X.shape[0])
 	np.random.shuffle(idx)
