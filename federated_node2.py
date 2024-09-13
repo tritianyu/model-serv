@@ -332,10 +332,10 @@ def start_he_server(config):
 
         test_acc.append(float(acc))
         json_data = {"global_epochs": config["modelParams"]["modelData"]["global_epochs"], "Accuracy": test_acc,
-                     "model_parameter": global_model_weights}
+                     "model_parameter": global_model_weights, "recognize_rate": 0.0}
 
         if e == int(config["modelParams"]["modelData"]["global_epochs"]) - 1:
-            filename = './results/results_HE.json'
+            filename = f'saved_models/he_models/{config["projectJobId"]}results_HE.json'
             with open(filename, 'w') as file_obj:
                 json.dump(json_data, file_obj, indent=4)
             response = {"processed_data": json_data, "message": "Data processed successfully"}

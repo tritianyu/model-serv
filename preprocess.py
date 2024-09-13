@@ -14,7 +14,7 @@ print("原始特征数据：")
 print(features.head())
 
 # 归一化处理
-scaler = MinMaxScaler()
+scaler = MinMaxScaler(feature_range=(-1, 1))
 normalized_features = scaler.fit_transform(features)
 
 # 将归一化后的数据转换为DataFrame，并保留原来的列名
