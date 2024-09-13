@@ -26,6 +26,7 @@ import threading
 
 
 app = Flask(__name__)
+client1_id = '127.0.0.1'
 
 
 class Server(object):
@@ -35,7 +36,7 @@ class Server(object):
 
         self.conf = conf
 
-        self.global_model = models.LR_Model(public_key=Server.public_key, w_size=self.conf["modelParams"]["modelData"]["feature_num"] + 1)
+        self.global_model = models.LR_Model(public_key=Server.public_key, w_size=int(self.conf["modelParams"]["modelData"]["feature_num"]) + 1)
 
         self.eval_x = eval_dataset[0]
 
@@ -49,6 +50,7 @@ class Server(object):
             self.global_model.encrypt_weights[id] = self.global_model.encrypt_weights[id] + update_per_layer
 
     def model_eval(self):
+        from sklearn.metrics import mean_absolute_error
         total_relative_error = 0.0
         total_loss = 0.0
         correct = 0
@@ -61,7 +63,8 @@ class Server(object):
         self.global_model.weights = models.decrypt_vector(Server.private_key, self.global_model.encrypt_weights)
         print("本轮全局模型参数：")
         print(self.global_model.weights)
-
+        all_pred = []
+        all_true = []
         for batch_id in range(batch_num):
             x = self.eval_x[batch_id * self.conf["modelParams"]["modelData"]["batch_size"]: (batch_id + 1) * self.conf["modelParams"]["modelData"]["batch_size"]]
             x = np.concatenate((x, np.ones((x.shape[0], 1))), axis=1)
@@ -82,6 +85,14 @@ class Server(object):
             # print(pred_y)
             # correct += np.sum(y == pred_y)
             # 计算相对误差
+            pred_y = wxs.flatten()
+            true_y = y.flatten()
+            all_pred.extend(pred_y)
+            all_true.extend(true_y)
+            # print(y)
+            # print(pred_y)
+            # correct += np.sum(y == pred_y)
+            # 计算相对误差
             relative_error = np.abs((pred_y - y) / y)
             total_relative_error += np.sum(relative_error)
 
@@ -89,14 +100,9 @@ class Server(object):
         # acc = 100.0 * (float(correct) / float(dataset_size))
         # total_loss = total_loss / dataset_size
         # 计算平均相对误差
-        mean_relative_error = total_relative_error / dataset_size
-        accuracy = 100.0 * mean_relative_error
+        mae = mean_absolute_error(all_true, all_pred)
 
-        return accuracy, self.global_model.weights
-
-    @staticmethod
-    def re_encrypt(w):
-        return models.encrypt_vector(Server.public_key, models.decrypt_vector(Server.private_key, w))
+        return mae, self.global_model.weights
 
 
 class Client(object):
@@ -201,6 +207,13 @@ def process_data():
 def start_he_server(config):
 
     app.logger.info(f"Server received config data: {config}")
+    config["modelParams"]["modelData"]["no_models"] = int(config["modelParams"]["modelData"]["no_models"])
+    config["modelParams"]["modelData"]["global_epochs"] = int(config["modelParams"]["modelData"]["global_epochs"])
+    config["modelParams"]["modelData"]["local_epochs"] = int(config["modelParams"]["modelData"]["local_epochs"])
+    config["modelParams"]["modelData"]["batch_size"] = int(config["modelParams"]["modelData"]["batch_size"])
+    config["modelParams"]["modelData"]["lr"] = float(config["modelParams"]["modelData"]["lr"])
+    config["modelParams"]["modelData"]["feature_num"] = int(config["modelParams"]["modelData"]["feature_num"])
+    config["modelParams"]["modelData"]["lambda"] = float(config["modelParams"]["modelData"]["lambda"])
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # server_socket.bind((config["baseConfig"]["modelControlUrl"], 12345))
@@ -217,10 +230,10 @@ def start_he_server(config):
 
             user_id = int(entry['userId'])
 
-            url = entry['url']
+            url = str(entry['url'])
 
-            is_initiator = entry['isInitiator']
-            if is_initiator:
+            if entry["url"] == config["baseConfig"]["modelControlUrl"]:
+                print("这是服务端")
                 dataset_file_url = None
                 for organ in config["modelParams"]["dataSet"]["projectOrgans"]:
                     if int(organ["userId"]) == user_id:
@@ -230,8 +243,8 @@ def start_he_server(config):
                     train_datasets, eval_datasets = read_dataset(dataset_file_url)
                     server = Server(config, eval_datasets)
                     test_acc = []
-                    train_size = train_datasets[0].shape[0]
-                    per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
+                    # train_size = train_datasets[0].shape[0]
+                    # per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
                 else:
                     app.logger.error(f"No dataset_file_url found for user_id: {user_id}")
                     continue
@@ -242,13 +255,17 @@ def start_he_server(config):
                 thread = threading.Thread(target=send_request, args=(client_url, config))
                 threads.append(thread)
                 thread.start()"""
+                print("这是客户端")
                 if user_id == 131:
                     client_url = f'http://{url}:5001/process_data'
+                    print(client_url)
                 elif user_id == 132:
                     client_url = f'http://{url}:5003/process_data'
+                    print(client_url)
                 thread = threading.Thread(target=send_request, args=(client_url, config))
                 threads.append(thread)
                 thread.start()
+                app.logger.info(config)
     except Exception as e:
         app.logger.error(f"Error occurred while starting he server: {e}")
         server_socket.close()
@@ -288,13 +305,13 @@ def start_he_server(config):
         send_data(client_socket, pickle.dumps(initial_data))
         app.logger.info(f"Sent data to client: {client_socket}")
 
-    for e in range(config["modelParams"]["modelData"]["global_epochs"]):
+    for e in range(int(config["modelParams"]["modelData"]["global_epochs"])):
         print(f"Global Epoch {e + 1}")
         # 重新加密全局模型权重
         server.global_model.encrypt_weights = models.encrypt_vector(Server.public_key,
                                                                     models.decrypt_vector(Server.private_key,
                                                                                           server.global_model.encrypt_weights))
-        weight_accumulator = [Server.public_key.encrypt(0.0)] * (config["modelParams"]["modelData"]["feature_num"] + 1)
+        weight_accumulator = [Server.public_key.encrypt(0.0)] * (int(config["modelParams"]["modelData"]["feature_num"]) + 1)
         data_to_send = {model_url["url"]: server.global_model.encrypt_weights for model_url in config["baseConfig"]["modelCalUrlList"]}
         for client_socket in clients:
             send_data(client_socket, pickle.dumps(data_to_send))
@@ -315,7 +332,7 @@ def start_he_server(config):
         json_data = {"global_epochs": config["modelParams"]["modelData"]["global_epochs"], "Accuracy": test_acc,
                      "model_parameter": global_model_weights}
 
-        if e == config["modelParams"]["modelData"]["global_epochs"] - 1:
+        if e == int(config["modelParams"]["modelData"]["global_epochs"]) - 1:
             filename = './results/results_HE.json'
             with open(filename, 'w') as file_obj:
                 json.dump(json_data, file_obj, indent=4)
@@ -343,8 +360,7 @@ def start_he_client(config):
 
     # 获取本地ip
     # client1_id = get_local_ip()
-    client1_id = '127.0.0.1'
-    app.logger.info(f"Client {client1_id} received config data: {config}")
+
     matching_entry = None
     for entry in config['baseConfig']['modelCalUrlList']:
         if entry['url'] == client1_id:
@@ -361,7 +377,8 @@ def start_he_client(config):
     train_datasets, eval_datasets = read_dataset(dataset_file_url)
 
     train_size = train_datasets[0].shape[0]
-    per_client_size = int(train_size / int(config["modelParams"]["modelData"]["no_models"]))
+    per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
+
     # 创建socket对象
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # 连接到服务器
@@ -553,6 +570,7 @@ def start_dp_server(config):
             elif user_id == 129:
                 client_url = f'http://{url}:5003/process_data'
             thread = threading.Thread(target=send_request, args=(client_url, config))
+            print(config)
             threads.append(thread)
             thread.start()
 

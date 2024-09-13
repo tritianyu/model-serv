@@ -50,6 +50,7 @@ class Server(object):
             self.global_model.encrypt_weights[id] = self.global_model.encrypt_weights[id] + update_per_layer
 
     def model_eval(self):
+        from sklearn.metrics import mean_absolute_error
         total_relative_error = 0.0
         total_loss = 0.0
         correct = 0
@@ -62,7 +63,8 @@ class Server(object):
         self.global_model.weights = models.decrypt_vector(Server.private_key, self.global_model.encrypt_weights)
         print("本轮全局模型参数：")
         print(self.global_model.weights)
-
+        all_pred = []
+        all_true = []
         for batch_id in range(batch_num):
             x = self.eval_x[batch_id * self.conf["modelParams"]["modelData"]["batch_size"]: (batch_id + 1) * self.conf["modelParams"]["modelData"]["batch_size"]]
             x = np.concatenate((x, np.ones((x.shape[0], 1))), axis=1)
@@ -72,13 +74,18 @@ class Server(object):
             dataset_size += x.shape[0]
 
             wxs = x.dot(self.global_model.weights)
+            # print(x)
+            # print(self.global_model)
 
             # pred_y = [1.0 / (1 + np.exp(-wx)) for wx in wxs]
             #
             # # print(pred_y)
             #
             # pred_y = np.array([1 if pred > 0.5 else -1 for pred in pred_y]).reshape((-1, 1))
-            pred_y = wxs
+            pred_y = wxs.flatten()
+            true_y = y.flatten()
+            all_pred.extend(pred_y)
+            all_true.extend(true_y)
             # print(y)
             # print(pred_y)
             # correct += np.sum(y == pred_y)
@@ -90,10 +97,10 @@ class Server(object):
         # acc = 100.0 * (float(correct) / float(dataset_size))
         # total_loss = total_loss / dataset_size
         # 计算平均相对误差
-        mean_relative_error = total_relative_error / dataset_size
-        accuracy = 100.0 * mean_relative_error
+        mae = mean_absolute_error(all_true, all_pred)
+        print(f"平均绝对误差（MAE）：{mae}")
 
-        return accuracy, self.global_model.weights
+        return mae, self.global_model.weights
 
     @staticmethod
     def re_encrypt(w):
@@ -323,7 +330,7 @@ def start_he_server(config):
         server.model_aggregate(weight_accumulator)
         acc, global_model_weights = server.model_eval()
 
-        test_acc.append(float(acc / 100))
+        test_acc.append(float(acc))
         json_data = {"global_epochs": config["modelParams"]["modelData"]["global_epochs"], "Accuracy": test_acc,
                      "model_parameter": global_model_weights}
 
@@ -392,10 +399,10 @@ def start_he_client(config):
     client_config = config_data[client1_id]
     data_slice = client_config["data_slice"]
     data_slice_y = client_config["data_slice_y"]
-    print(data_slice)
+    # print(data_slice)
     # 使用 eval() 函数来获取实际的数据分片
     train_data_x = eval(data_slice)
-    print(train_data_x)
+    # print(train_data_x)
     train_data_y = eval(data_slice_y)
     client_1 = Client(
         client_config["config"],

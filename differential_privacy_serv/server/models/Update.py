@@ -3,12 +3,38 @@
 # Python version: 3.9
 
 import torch
+import pandas as pd
 from torch import nn, autograd
 from differential_privacy_serv.server.utils.dp_mechanism import cal_sensitivity, cal_sensitivity_MA, Laplace, Gaussian_Simple, Gaussian_MA
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 import random
-from sklearn import metrics
+from sklearn.preprocessing import StandardScaler
+
+
+class TimeSeriesDataset(Dataset):
+    def __init__(self, csv_file, transform=None):
+        self.data = pd.read_csv(csv_file)
+        self.transform = transform
+        # 假设 CSV 包含 'features' 和 'target' 列
+        self.X = self.data.iloc[:, 1:-1].values
+        self.y = self.data.iloc[:, -1].values
+
+        # 数据归一化
+        self.scaler = StandardScaler()
+        self.X = self.scaler.fit_transform(self.X)
+
+    def __len__(self):
+        return len(self.y)
+
+    def __getitem__(self, idx):
+        x = self.X[idx]
+        y = self.y[idx]
+
+        if self.transform:
+            x = self.transform(x)
+
+        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
 
 class DatasetSplit(Dataset):

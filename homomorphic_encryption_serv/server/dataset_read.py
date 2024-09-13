@@ -9,7 +9,7 @@ def read_dataset(file_path):
 	# 假设 Y 是最后一列，X 是前面的列
 	data_X = df.iloc[:, 1:-1].values
 	data_Y = df.iloc[:, -1].values  # 取最后一列作为 Y
-	
+	print(data_X, data_Y)
 	# with open(file_path) as fin:
 	# 	for line in fin:
 	# 		data = line.split(',')

@@ -16,7 +16,7 @@ from flask import Flask, request, jsonify
 
 from differential_privacy_serv.server.utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
 from differential_privacy_serv.server.models.Update import LocalUpdateDP, LocalUpdateDPSerial
-from differential_privacy_serv.server.models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM
+from differential_privacy_serv.server.models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM, LSTMPredictor
 from differential_privacy_serv.server.models.Fed import FedAvg, FedWeightAvg
 from differential_privacy_serv.server.models.test import test_img
 from differential_privacy_serv.server.utils.dataset import FEMNIST, ShakeSpeare
@@ -26,6 +26,7 @@ import threading
 
 
 app = Flask(__name__)
+client1_id = '127.0.0.1'
 
 
 class Server(object):
@@ -35,7 +36,7 @@ class Server(object):
 
         self.conf = conf
 
-        self.global_model = models.LR_Model(public_key=Server.public_key, w_size=self.conf["modelParams"]["modelData"]["feature_num"] + 1)
+        self.global_model = models.LR_Model(public_key=Server.public_key, w_size=int(self.conf["modelParams"]["modelData"]["feature_num"]) + 1)
 
         self.eval_x = eval_dataset[0]
 
@@ -49,6 +50,7 @@ class Server(object):
             self.global_model.encrypt_weights[id] = self.global_model.encrypt_weights[id] + update_per_layer
 
     def model_eval(self):
+        from sklearn.metrics import mean_absolute_error
         total_relative_error = 0.0
         total_loss = 0.0
         correct = 0
@@ -61,7 +63,8 @@ class Server(object):
         self.global_model.weights = models.decrypt_vector(Server.private_key, self.global_model.encrypt_weights)
         print("本轮全局模型参数：")
         print(self.global_model.weights)
-
+        all_pred = []
+        all_true = []
         for batch_id in range(batch_num):
             x = self.eval_x[batch_id * self.conf["modelParams"]["modelData"]["batch_size"]: (batch_id + 1) * self.conf["modelParams"]["modelData"]["batch_size"]]
             x = np.concatenate((x, np.ones((x.shape[0], 1))), axis=1)
@@ -82,6 +85,14 @@ class Server(object):
             # print(pred_y)
             # correct += np.sum(y == pred_y)
             # 计算相对误差
+            pred_y = wxs.flatten()
+            true_y = y.flatten()
+            all_pred.extend(pred_y)
+            all_true.extend(true_y)
+            # print(y)
+            # print(pred_y)
+            # correct += np.sum(y == pred_y)
+            # 计算相对误差
             relative_error = np.abs((pred_y - y) / y)
             total_relative_error += np.sum(relative_error)
 
@@ -89,10 +100,9 @@ class Server(object):
         # acc = 100.0 * (float(correct) / float(dataset_size))
         # total_loss = total_loss / dataset_size
         # 计算平均相对误差
-        mean_relative_error = total_relative_error / dataset_size
-        accuracy = 100.0 * mean_relative_error
+        mae = mean_absolute_error(all_true, all_pred)
 
-        return accuracy, self.global_model.weights
+        return mae, self.global_model.weights
 
     @staticmethod
     def re_encrypt(w):
@@ -140,12 +150,6 @@ class Client(object):
             x = np.concatenate((x, np.ones((x.shape[0], 1))), axis=1)
             y = self.data_y[batch_idx].reshape((-1, 1))
 
-            # print((0.25 * x.dot(self.local_model.encrypt_weights) + 0.5 * y.transpose() * neg_one).shape)
-
-            # print(x.transpose().shape)
-
-            # assert(False)
-
             batch_encrypted_grad = x.transpose() * (
                     0.25 * x.dot(self.local_model.encrypt_weights) + 0.5 * y.transpose() * neg_one)
             encrypted_grad = batch_encrypted_grad.sum(axis=1) / y.shape[0]
@@ -154,7 +158,6 @@ class Client(object):
                 self.local_model.encrypt_weights[j] -= self.conf["modelParams"]["modelData"]["lr"] * encrypted_grad[j]
 
         weight_accumulators = []
-        # print(models.decrypt_vector(Server.private_key, weights))
         for j in range(len(self.local_model.encrypt_weights)):
             weight_accumulators.append(self.local_model.encrypt_weights[j] - original_w[j])
 
@@ -201,6 +204,13 @@ def process_data():
 def start_he_server(config):
 
     app.logger.info(f"Server received config data: {config}")
+    config["modelParams"]["modelData"]["no_models"] = int(config["modelParams"]["modelData"]["no_models"])
+    config["modelParams"]["modelData"]["global_epochs"] = int(config["modelParams"]["modelData"]["global_epochs"])
+    config["modelParams"]["modelData"]["local_epochs"] = int(config["modelParams"]["modelData"]["local_epochs"])
+    config["modelParams"]["modelData"]["batch_size"] = int(config["modelParams"]["modelData"]["batch_size"])
+    config["modelParams"]["modelData"]["lr"] = float(config["modelParams"]["modelData"]["lr"])
+    config["modelParams"]["modelData"]["feature_num"] = int(config["modelParams"]["modelData"]["feature_num"])
+    config["modelParams"]["modelData"]["lambda"] = float(config["modelParams"]["modelData"]["lambda"])
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # server_socket.bind((config["baseConfig"]["modelControlUrl"], 12345))
@@ -217,10 +227,10 @@ def start_he_server(config):
 
             user_id = int(entry['userId'])
 
-            url = entry['url']
+            url = str(entry['url'])
 
-            is_initiator = entry['isInitiator']
-            if is_initiator:
+            if entry["url"] == config["baseConfig"]["modelControlUrl"]:
+                print("这是服务端")
                 dataset_file_url = None
                 for organ in config["modelParams"]["dataSet"]["projectOrgans"]:
                     if int(organ["userId"]) == user_id:
@@ -230,8 +240,8 @@ def start_he_server(config):
                     train_datasets, eval_datasets = read_dataset(dataset_file_url)
                     server = Server(config, eval_datasets)
                     test_acc = []
-                    train_size = train_datasets[0].shape[0]
-                    per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
+                    # train_size = train_datasets[0].shape[0]
+                    # per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
                 else:
                     app.logger.error(f"No dataset_file_url found for user_id: {user_id}")
                     continue
@@ -242,13 +252,17 @@ def start_he_server(config):
                 thread = threading.Thread(target=send_request, args=(client_url, config))
                 threads.append(thread)
                 thread.start()"""
+                print("这是客户端")
                 if user_id == 131:
                     client_url = f'http://{url}:5001/process_data'
+                    print(client_url)
                 elif user_id == 132:
                     client_url = f'http://{url}:5003/process_data'
+                    print(client_url)
                 thread = threading.Thread(target=send_request, args=(client_url, config))
                 threads.append(thread)
                 thread.start()
+                app.logger.info(config)
     except Exception as e:
         app.logger.error(f"Error occurred while starting he server: {e}")
         server_socket.close()
@@ -288,13 +302,13 @@ def start_he_server(config):
         send_data(client_socket, pickle.dumps(initial_data))
         app.logger.info(f"Sent data to client: {client_socket}")
 
-    for e in range(config["modelParams"]["modelData"]["global_epochs"]):
+    for e in range(int(config["modelParams"]["modelData"]["global_epochs"])):
         print(f"Global Epoch {e + 1}")
         # 重新加密全局模型权重
         server.global_model.encrypt_weights = models.encrypt_vector(Server.public_key,
                                                                     models.decrypt_vector(Server.private_key,
                                                                                           server.global_model.encrypt_weights))
-        weight_accumulator = [Server.public_key.encrypt(0.0)] * (config["modelParams"]["modelData"]["feature_num"] + 1)
+        weight_accumulator = [Server.public_key.encrypt(0.0)] * (int(config["modelParams"]["modelData"]["feature_num"]) + 1)
         data_to_send = {model_url["url"]: server.global_model.encrypt_weights for model_url in config["baseConfig"]["modelCalUrlList"]}
         for client_socket in clients:
             send_data(client_socket, pickle.dumps(data_to_send))
@@ -315,7 +329,7 @@ def start_he_server(config):
         json_data = {"global_epochs": config["modelParams"]["modelData"]["global_epochs"], "Accuracy": test_acc,
                      "model_parameter": global_model_weights}
 
-        if e == config["modelParams"]["modelData"]["global_epochs"] - 1:
+        if e == int(config["modelParams"]["modelData"]["global_epochs"]) - 1:
             filename = './results/results_HE.json'
             with open(filename, 'w') as file_obj:
                 json.dump(json_data, file_obj, indent=4)
@@ -343,7 +357,7 @@ def start_he_client(config):
 
     # 获取本地ip
     # client1_id = get_local_ip()
-    client1_id = '127.0.0.1'
+
     matching_entry = None
     for entry in config['baseConfig']['modelCalUrlList']:
         if entry['url'] == client1_id:
@@ -360,7 +374,7 @@ def start_he_client(config):
     train_datasets, eval_datasets = read_dataset(dataset_file_url)
 
     train_size = train_datasets[0].shape[0]
-    per_client_size = int(train_size / int(config["modelParams"]["modelData"]["no_models"]))
+    per_client_size = int(train_size / config["modelParams"]["modelData"]["no_models"])
 
     # 创建socket对象
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -429,6 +443,18 @@ def start_dp_server(config):
     # model = CNNMnist(args)
     # model.load_state_dict(torch.load('DP_model.pth'))
     # model.eval()
+    matching_entry = None
+    for entry in config['baseConfig']['modelCalUrlList']:
+        if entry['url'] == client1_id:
+            matching_entry = entry
+            break
+    if not matching_entry:
+        app.logger.error(f"Not find matching client url")
+    user_id = matching_entry['userId']
+    for organ in config['modelParams']['dataSet']['projectOrgans']:
+        if organ['userId'] == user_id:
+            dataset_file_url = organ['resource'][0]['dataSetFilePath']
+            break
 
     config["device"] = torch.device(
         'cuda:{}'.format(config["modelParams"]["modelData"]["gpu"]) if torch.cuda.is_available() and config["modelParams"]["modelData"]["gpu"] != -1 else 'cpu')
@@ -471,9 +497,13 @@ def start_dp_server(config):
         else:
             print(
                 "Warning: The ShakeSpeare dataset is naturally non-iid, you do not need to specify iid or non-iid")
+    elif config["modelParams"]["modelData"]["dataset"] == 'carbon':
+        dataset_train = pd.read_excel(dataset_file_url)
+        dataset_test = pd.read_excel(dataset_file_url)
     else:
         exit('Error: unrecognized dataset')
-    img_size = dataset_train[0][0].shape
+    # img_size = dataset_train[0][0].shape
+
     net_glob = None
     # build model
     if config["modelParams"]["modelData"]["model"] == 'cnn' and config["modelParams"]["modelData"]["dataset"] == 'cifar':
@@ -482,11 +512,13 @@ def start_dp_server(config):
         net_glob = CNNMnist(args=config["modelParams"]["modelData"]).to(config["device"])
     elif config["modelParams"]["modelData"]["dataset"] == 'shakespeare' and config["modelParams"]["modelData"]["model"] == 'lstm':
         net_glob = CharLSTM().to(config["device"])
-    elif config["modelParams"]["modelData"]["model"] == 'mlp':
-        len_in = 1
-        for x in img_size:
-            len_in *= x
-        net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=config["modelParams"]["modelData"]["num_classes"]).to(config["device"])
+    elif config["modelParams"]["modelData"]["model"] == 'lstm':
+        net_glob = LSTMPredictor.to(config["device"])
+    # elif config["modelParams"]["modelData"]["model"] == 'mlp':
+    #     len_in = 1
+    #     for x in img_size:
+    #         len_in *= x
+    #     net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=config["modelParams"]["modelData"]["num_classes"]).to(config["device"])
     else:
         exit('Error: unrecognized model')
 
@@ -516,7 +548,7 @@ def start_dp_server(config):
     # 创建socket对象
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # 绑定IP地址和端口号
-    server_socket.bind((config["baseConfig"]["modelControlUrl"], 12345))
+    server_socket.bind(("0.0.0.0", 12345))
     # 开始监听
     server_socket.listen(len(config["baseConfig"]["modelCalUrlList"]))
     print("服务器启动，等待连接...")
@@ -524,13 +556,6 @@ def start_dp_server(config):
     threads = []
     config['role'] = 'client'
     config.pop('device', None)
-    """for key in config:
-        if "client" in key:
-            client_url = f'http://{config["key"]}:5001/process_data'
-            thread = threading.Thread(target=send_request, config=(client_url, data))
-            threads.append(thread)
-            thread.start()"""
-
     for entry in config['baseConfig']['modelCalUrlList']:
         client_url = ""
 
@@ -553,6 +578,7 @@ def start_dp_server(config):
             elif user_id == 129:
                 client_url = f'http://{url}:5003/process_data'
             thread = threading.Thread(target=send_request, args=(client_url, config))
+            print(config)
             threads.append(thread)
             thread.start()
 
@@ -703,6 +729,18 @@ def start_dp_client(config):
 
     config["device"] = torch.device('cuda:{}'.format(config["modelParams"]["modelData"]["gpu"]) if torch.cuda.is_available() and config["modelParams"]["modelData"]["gpu"] != -1 else 'cpu')
     # load dataset and split users
+    matching_entry = None
+    for entry in config['baseConfig']['modelCalUrlList']:
+        if entry['url'] == client1_id:
+            matching_entry = entry
+            break
+    if not matching_entry:
+        app.logger.error(f"Not find matching client url")
+    user_id = matching_entry['userId']
+    for organ in config['modelParams']['dataSet']['projectOrgans']:
+        if organ['userId'] == user_id:
+            dataset_file_url = organ['resource'][0]['dataSetFilePath']
+            break
     if config["modelParams"]["modelData"]["dataset"] == 'mnist':
         trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans_mnist)
@@ -741,6 +779,9 @@ def start_dp_client(config):
         else:
             print(
                 "Warning: The ShakeSpeare dataset is naturally non-iid, you do not need to specify iid or non-iid")
+    elif config["modelParams"]["modelData"]["dataset"] == 'carbon':
+        dataset_train = pd.read_excel(dataset_file_url)
+        dataset_test = pd.read_excel(dataset_file_url)
     else:
         exit('Error: unrecognized dataset')
     img_size = dataset_train[0][0].shape
