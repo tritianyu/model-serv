@@ -15,7 +15,7 @@ import json
 from flask import Flask, request, jsonify
 
 from differential_privacy_serv.server.utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
-from differential_privacy_serv.server.models.Update import LocalUpdateDP, LocalUpdateDPSerial
+from differential_privacy_serv.server.models.Update import LocalUpdateDP, LocalUpdateDPSerial, ExcelDataset
 from differential_privacy_serv.server.models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM, LSTMPredictor
 from differential_privacy_serv.server.models.Fed import FedAvg, FedWeightAvg
 from differential_privacy_serv.server.models.test import test_img
@@ -498,8 +498,14 @@ def start_dp_server(config):
             print(
                 "Warning: The ShakeSpeare dataset is naturally non-iid, you do not need to specify iid or non-iid")
     elif config["modelParams"]["modelData"]["dataset"] == 'carbon':
-        dataset_train = pd.read_excel(dataset_file_url)
-        dataset_test = pd.read_excel(dataset_file_url)
+        class ToTensor1D(object):
+            def __call__(self, feature):
+                return torch.tensor(feature, dtype=torch.float32)
+        feature_transform = transforms.Compose([
+            ToTensor1D(),
+        ])
+        dataset_train = ExcelDataset(file_path=dataset_file_url, transform=feature_transform)
+        dataset_test = ExcelDataset(file_path=dataset_file_url, transform=feature_transform)
     else:
         exit('Error: unrecognized dataset')
     # img_size = dataset_train[0][0].shape
@@ -513,7 +519,7 @@ def start_dp_server(config):
     elif config["modelParams"]["modelData"]["dataset"] == 'shakespeare' and config["modelParams"]["modelData"]["model"] == 'lstm':
         net_glob = CharLSTM().to(config["device"])
     elif config["modelParams"]["modelData"]["model"] == 'lstm':
-        net_glob = LSTMPredictor.to(config["device"])
+        net_glob = LSTMPredictor()
     # elif config["modelParams"]["modelData"]["model"] == 'mlp':
     #     len_in = 1
     #     for x in img_size:
@@ -628,13 +634,14 @@ def start_dp_server(config):
         net_glob.load_state_dict(w_glob)
 
         net_glob.eval()
-        acc_t, loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
+        # acc_t, loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
+        loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
         t_end = time.time()
-        print("Round {:3d},Testing accuracy: {:.2f},Loss：{:.5f}, Time:  {:.2f}s".format(iter, acc_t, loss_t,
-                                                                                        t_end - t_start))
-
-        acc_test.append(acc_t.item())
-        acc_list.append(acc_t.item())
+        # print("Round {:3d},Testing accuracy: {:.2f},Loss：{:.5f}, Time:  {:.2f}s".format(iter, acc_t, loss_t,
+        #                                                                                 t_end - t_start))
+        print("Round {:3d},Loss：{:.5f}, Time:  {:.2f}s".format(iter, loss_t, t_end - t_start))
+        # acc_test.append(acc_t.item())
+        # acc_list.append(acc_t.item())
         loss_test.append(loss_t)
         loss_list.append(loss_t)
 
@@ -780,8 +787,21 @@ def start_dp_client(config):
             print(
                 "Warning: The ShakeSpeare dataset is naturally non-iid, you do not need to specify iid or non-iid")
     elif config["modelParams"]["modelData"]["dataset"] == 'carbon':
-        dataset_train = pd.read_excel(dataset_file_url)
-        dataset_test = pd.read_excel(dataset_file_url)
+        class ToTensor1D(object):
+            def __call__(self, feature):
+                return torch.tensor(feature, dtype=torch.float32)
+        feature_transform = transforms.Compose([
+            ToTensor1D(),
+        ])
+        dataset_train = ExcelDataset(file_path=dataset_file_url, transform=feature_transform)
+        dataset_test = ExcelDataset(file_path=dataset_file_url, transform=feature_transform)
+        print(dataset_train)
+        num_users = config["modelParams"]["modelData"]["num_users"]
+        if config["modelParams"]["modelData"]["iid"]:
+            dict_users = dataset_iid(dataset_train, num_users)
+        else:
+            dict_users = dataset_noniid(dataset_train, num_users)
+
     else:
         exit('Error: unrecognized dataset')
     img_size = dataset_train[0][0].shape
@@ -820,20 +840,51 @@ def start_dp_client(config):
     client_socket.close()
 
 
-def get_local_ip():
-    try:
-        # 创建一个UDP连接
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # 连接到一个外部的IP地址，这里用的是Google的DNS服务器IP
-        s.connect(("8.8.8.8", 80))
-        # 获取本地IP地址
-        local_ip = s.getsockname()[0]
-        s.close()
-    except Exception as e:
-        local_ip = "Unable to get IP"
-        print(f"Error: {e}")
-    return local_ip
 
+def dataset_iid(dataset, num_users):
+    """
+    Sample I.I.D. client data from the given dataset
+    :param dataset: PyTorch Dataset object
+    :param num_users: number of users
+    :return: dict of image index lists for each user
+    """
+    num_items = int(len(dataset) / num_users)
+    all_indices = np.arange(len(dataset))
+    np.random.shuffle(all_indices)
+    dict_users = {}
+    for i in range(num_users):
+        start_idx = i * num_items
+        end_idx = start_idx + num_items
+        dict_users[i] = set(all_indices[start_idx:end_idx])
+    return dict_users
+def dataset_noniid(dataset, num_users):
+    """
+    Sample non-I.I.D client data from the given dataset
+    :param dataset: PyTorch Dataset object
+    :param num_users: number of users
+    :return: dict of data index lists for each user
+    """
+    # Sort data indices by labels (assuming dataset returns (data, label))
+    targets = [dataset[i][1] for i in range(len(dataset))]
+    indices = np.arange(len(dataset))
+    indices_targets = np.vstack((indices, targets))
+    indices_targets = indices_targets[:, indices_targets[1, :].argsort()]
+    indices = indices_targets[0, :]
+
+    # Divide sorted indices into shards (e.g., 2 shards per user)
+    num_shards = num_users * 2
+    shards_size = int(len(dataset) / num_shards)
+    shards = [indices[i * shards_size:(i + 1) * shards_size] for i in range(num_shards)]
+
+    dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
+    shard_indices = np.random.permutation(num_shards)
+
+    # Assign shards to users
+    for i in range(num_users):
+        shard_ids = shard_indices[i * 2:(i + 1) * 2]
+        user_indices = np.concatenate([shards[shard_id] for shard_id in shard_ids])
+        dict_users[i] = set(user_indices)
+    return dict_users
 
 def send_request(client_url, data):
     try:

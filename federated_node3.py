@@ -15,8 +15,8 @@ import json
 from flask import Flask, request, jsonify
 
 from differential_privacy_serv.server.utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
-from differential_privacy_serv.server.models.Update import LocalUpdateDP, LocalUpdateDPSerial
-from differential_privacy_serv.server.models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM
+from differential_privacy_serv.server.models.Update import LocalUpdateDP, LocalUpdateDPSerial, ExcelDataset
+from differential_privacy_serv.server.models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM, LSTMPredictor
 from differential_privacy_serv.server.models.Fed import FedAvg, FedWeightAvg
 from differential_privacy_serv.server.models.test import test_img
 from differential_privacy_serv.server.utils.dataset import FEMNIST, ShakeSpeare
@@ -104,6 +104,10 @@ class Server(object):
 
         return mae, self.global_model.weights
 
+    @staticmethod
+    def re_encrypt(w):
+        return models.encrypt_vector(Server.public_key, models.decrypt_vector(Server.private_key, w))
+
 
 class Client(object):
 
@@ -146,12 +150,6 @@ class Client(object):
             x = np.concatenate((x, np.ones((x.shape[0], 1))), axis=1)
             y = self.data_y[batch_idx].reshape((-1, 1))
 
-            # print((0.25 * x.dot(self.local_model.encrypt_weights) + 0.5 * y.transpose() * neg_one).shape)
-
-            # print(x.transpose().shape)
-
-            # assert(False)
-
             batch_encrypted_grad = x.transpose() * (
                     0.25 * x.dot(self.local_model.encrypt_weights) + 0.5 * y.transpose() * neg_one)
             encrypted_grad = batch_encrypted_grad.sum(axis=1) / y.shape[0]
@@ -160,7 +158,6 @@ class Client(object):
                 self.local_model.encrypt_weights[j] -= self.conf["modelParams"]["modelData"]["lr"] * encrypted_grad[j]
 
         weight_accumulators = []
-        # print(models.decrypt_vector(Server.private_key, weights))
         for j in range(len(self.local_model.encrypt_weights)):
             weight_accumulators.append(self.local_model.encrypt_weights[j] - original_w[j])
 
@@ -446,6 +443,18 @@ def start_dp_server(config):
     # model = CNNMnist(args)
     # model.load_state_dict(torch.load('DP_model.pth'))
     # model.eval()
+    matching_entry = None
+    for entry in config['baseConfig']['modelCalUrlList']:
+        if entry['url'] == client1_id:
+            matching_entry = entry
+            break
+    if not matching_entry:
+        app.logger.error(f"Not find matching client url")
+    user_id = matching_entry['userId']
+    for organ in config['modelParams']['dataSet']['projectOrgans']:
+        if organ['userId'] == user_id:
+            dataset_file_url = organ['resource'][0]['dataSetFilePath']
+            break
 
     config["device"] = torch.device(
         'cuda:{}'.format(config["modelParams"]["modelData"]["gpu"]) if torch.cuda.is_available() and config["modelParams"]["modelData"]["gpu"] != -1 else 'cpu')
@@ -488,9 +497,19 @@ def start_dp_server(config):
         else:
             print(
                 "Warning: The ShakeSpeare dataset is naturally non-iid, you do not need to specify iid or non-iid")
+    elif config["modelParams"]["modelData"]["dataset"] == 'carbon':
+        class ToTensor1D(object):
+            def __call__(self, feature):
+                return torch.tensor(feature, dtype=torch.float32)
+        feature_transform = transforms.Compose([
+            ToTensor1D(),
+        ])
+        dataset_train = ExcelDataset(file_path=dataset_file_url, transform=feature_transform)
+        dataset_test = ExcelDataset(file_path=dataset_file_url, transform=feature_transform)
     else:
         exit('Error: unrecognized dataset')
-    img_size = dataset_train[0][0].shape
+    # img_size = dataset_train[0][0].shape
+
     net_glob = None
     # build model
     if config["modelParams"]["modelData"]["model"] == 'cnn' and config["modelParams"]["modelData"]["dataset"] == 'cifar':
@@ -499,11 +518,13 @@ def start_dp_server(config):
         net_glob = CNNMnist(args=config["modelParams"]["modelData"]).to(config["device"])
     elif config["modelParams"]["modelData"]["dataset"] == 'shakespeare' and config["modelParams"]["modelData"]["model"] == 'lstm':
         net_glob = CharLSTM().to(config["device"])
-    elif config["modelParams"]["modelData"]["model"] == 'mlp':
-        len_in = 1
-        for x in img_size:
-            len_in *= x
-        net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=config["modelParams"]["modelData"]["num_classes"]).to(config["device"])
+    elif config["modelParams"]["modelData"]["model"] == 'lstm':
+        net_glob = LSTMPredictor()
+    # elif config["modelParams"]["modelData"]["model"] == 'mlp':
+    #     len_in = 1
+    #     for x in img_size:
+    #         len_in *= x
+    #     net_glob = MLP(dim_in=len_in, dim_hidden=64, dim_out=config["modelParams"]["modelData"]["num_classes"]).to(config["device"])
     else:
         exit('Error: unrecognized model')
 
@@ -533,7 +554,7 @@ def start_dp_server(config):
     # 创建socket对象
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # 绑定IP地址和端口号
-    server_socket.bind((config["baseConfig"]["modelControlUrl"], 12345))
+    server_socket.bind(("0.0.0.0", 12345))
     # 开始监听
     server_socket.listen(len(config["baseConfig"]["modelCalUrlList"]))
     print("服务器启动，等待连接...")
@@ -541,13 +562,6 @@ def start_dp_server(config):
     threads = []
     config['role'] = 'client'
     config.pop('device', None)
-    """for key in config:
-        if "client" in key:
-            client_url = f'http://{config["key"]}:5001/process_data'
-            thread = threading.Thread(target=send_request, config=(client_url, data))
-            threads.append(thread)
-            thread.start()"""
-
     for entry in config['baseConfig']['modelCalUrlList']:
         client_url = ""
 
@@ -620,13 +634,14 @@ def start_dp_server(config):
         net_glob.load_state_dict(w_glob)
 
         net_glob.eval()
-        acc_t, loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
+        # acc_t, loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
+        loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
         t_end = time.time()
-        print("Round {:3d},Testing accuracy: {:.2f},Loss：{:.5f}, Time:  {:.2f}s".format(iter, acc_t, loss_t,
-                                                                                        t_end - t_start))
-
-        acc_test.append(acc_t.item())
-        acc_list.append(acc_t.item())
+        # print("Round {:3d},Testing accuracy: {:.2f},Loss：{:.5f}, Time:  {:.2f}s".format(iter, acc_t, loss_t,
+        #                                                                                 t_end - t_start))
+        print("Round {:3d},Loss：{:.5f}, Time:  {:.2f}s".format(iter, loss_t, t_end - t_start))
+        # acc_test.append(acc_t.item())
+        # acc_list.append(acc_t.item())
         loss_test.append(loss_t)
         loss_list.append(loss_t)
 
@@ -721,6 +736,18 @@ def start_dp_client(config):
 
     config["device"] = torch.device('cuda:{}'.format(config["modelParams"]["modelData"]["gpu"]) if torch.cuda.is_available() and config["modelParams"]["modelData"]["gpu"] != -1 else 'cpu')
     # load dataset and split users
+    matching_entry = None
+    for entry in config['baseConfig']['modelCalUrlList']:
+        if entry['url'] == client1_id:
+            matching_entry = entry
+            break
+    if not matching_entry:
+        app.logger.error(f"Not find matching client url")
+    user_id = matching_entry['userId']
+    for organ in config['modelParams']['dataSet']['projectOrgans']:
+        if organ['userId'] == user_id:
+            dataset_file_url = organ['resource'][0]['dataSetFilePath']
+            break
     if config["modelParams"]["modelData"]["dataset"] == 'mnist':
         trans_mnist = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans_mnist)
@@ -759,6 +786,22 @@ def start_dp_client(config):
         else:
             print(
                 "Warning: The ShakeSpeare dataset is naturally non-iid, you do not need to specify iid or non-iid")
+    elif config["modelParams"]["modelData"]["dataset"] == 'carbon':
+        class ToTensor1D(object):
+            def __call__(self, feature):
+                return torch.tensor(feature, dtype=torch.float32)
+        feature_transform = transforms.Compose([
+            ToTensor1D(),
+        ])
+        dataset_train = ExcelDataset(file_path=dataset_file_url, transform=feature_transform)
+        dataset_test = ExcelDataset(file_path=dataset_file_url, transform=feature_transform)
+        print(dataset_train)
+        num_users = config["modelParams"]["modelData"]["num_users"]
+        if config["modelParams"]["modelData"]["iid"]:
+            dict_users = dataset_iid(dataset_train, num_users)
+        else:
+            dict_users = dataset_noniid(dataset_train, num_users)
+
     else:
         exit('Error: unrecognized dataset')
     img_size = dataset_train[0][0].shape
@@ -797,20 +840,51 @@ def start_dp_client(config):
     client_socket.close()
 
 
-def get_local_ip():
-    try:
-        # 创建一个UDP连接
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # 连接到一个外部的IP地址，这里用的是Google的DNS服务器IP
-        s.connect(("8.8.8.8", 80))
-        # 获取本地IP地址
-        local_ip = s.getsockname()[0]
-        s.close()
-    except Exception as e:
-        local_ip = "Unable to get IP"
-        print(f"Error: {e}")
-    return local_ip
 
+def dataset_iid(dataset, num_users):
+    """
+    Sample I.I.D. client data from the given dataset
+    :param dataset: PyTorch Dataset object
+    :param num_users: number of users
+    :return: dict of image index lists for each user
+    """
+    num_items = int(len(dataset) / num_users)
+    all_indices = np.arange(len(dataset))
+    np.random.shuffle(all_indices)
+    dict_users = {}
+    for i in range(num_users):
+        start_idx = i * num_items
+        end_idx = start_idx + num_items
+        dict_users[i] = set(all_indices[start_idx:end_idx])
+    return dict_users
+def dataset_noniid(dataset, num_users):
+    """
+    Sample non-I.I.D client data from the given dataset
+    :param dataset: PyTorch Dataset object
+    :param num_users: number of users
+    :return: dict of data index lists for each user
+    """
+    # Sort data indices by labels (assuming dataset returns (data, label))
+    targets = [dataset[i][1] for i in range(len(dataset))]
+    indices = np.arange(len(dataset))
+    indices_targets = np.vstack((indices, targets))
+    indices_targets = indices_targets[:, indices_targets[1, :].argsort()]
+    indices = indices_targets[0, :]
+
+    # Divide sorted indices into shards (e.g., 2 shards per user)
+    num_shards = num_users * 2
+    shards_size = int(len(dataset) / num_shards)
+    shards = [indices[i * shards_size:(i + 1) * shards_size] for i in range(num_shards)]
+
+    dict_users = {i: np.array([], dtype='int64') for i in range(num_users)}
+    shard_indices = np.random.permutation(num_shards)
+
+    # Assign shards to users
+    for i in range(num_users):
+        shard_ids = shard_indices[i * 2:(i + 1) * 2]
+        user_indices = np.concatenate([shards[shard_id] for shard_id in shard_ids])
+        dict_users[i] = set(user_indices)
+    return dict_users
 
 def send_request(client_url, data):
     try:

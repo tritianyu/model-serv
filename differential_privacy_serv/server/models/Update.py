@@ -12,29 +12,37 @@ import random
 from sklearn.preprocessing import StandardScaler
 
 
-class TimeSeriesDataset(Dataset):
-    def __init__(self, csv_file, transform=None):
-        self.data = pd.read_csv(csv_file)
-        self.transform = transform
-        # 假设 CSV 包含 'features' 和 'target' 列
-        self.X = self.data.iloc[:, 1:-1].values
-        self.y = self.data.iloc[:, -1].values
+class ExcelDataset(Dataset):
+    def __init__(self, file_path, transform=None, target_transform=None):
+        """
+        Args:
+            file_path (string): Excel 文件的路径。
+            transform (callable, optional): 对特征进行变换的函数。
+            target_transform (callable, optional): 对标签进行变换的函数。
+        """
+        # 读取 Excel 文件
+        df = pd.read_excel(file_path)
 
-        # 数据归一化
-        self.scaler = StandardScaler()
-        self.X = self.scaler.fit_transform(self.X)
+        # 去除第一列和最后一列（假设第一列是 ID，最后一列是标签）
+        self.features = df.iloc[:, 1:-1].values.astype(np.float32)
+        self.labels = df.iloc[:, -1].values.astype(np.float32)
+        # print(f"Features shape: {self.features.shape}")
+        self.transform = transform
+        self.target_transform = target_transform
 
     def __len__(self):
-        return len(self.y)
+        return len(self.labels)
 
     def __getitem__(self, idx):
-        x = self.X[idx]
-        y = self.y[idx]
+        feature = self.features[idx]
+        label = self.labels[idx]
 
         if self.transform:
-            x = self.transform(x)
-
-        return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
+            feature = self.transform(feature)
+        if self.target_transform:
+            label = self.target_transform(label)
+        feature = feature.unsqueeze(0)
+        return feature, label
 
 
 class DatasetSplit(Dataset):
@@ -53,8 +61,8 @@ class DatasetSplit(Dataset):
 class LocalUpdateDP(object):
     def __init__(self, args, dataset=None, idxs=None):
         self.args = args  # 保存传入的参数对象
-        self.loss_func = nn.CrossEntropyLoss()  # 使用交叉熵损失函数
-
+        # self.loss_func = nn.CrossEntropyLoss()  # 使用交叉熵损失函数
+        self.loss_func = nn.MSELoss()  # 使用均方误差损失函数
         self.idxs_sample = np.random.choice(list(idxs), int(self.args["dp_sample"] * len(idxs)), replace=False)
         # 从给定的样本索引中随机选择一部分样本作为训练样本，数量由 dp_sample 决定, dp_sample表示sample rate for moment account， 这里设置为 1
 
@@ -106,7 +114,7 @@ class LocalUpdateDP(object):
             images, labels = images.to(self.args["device"]), labels.to(self.args["device"])  # 将数据移动到指定的设备（GPU或CPU）
             net.zero_grad()  # 清零梯度
             log_probs = net(images)  # 前向传播得到预测值
-            loss = self.loss_func(log_probs, labels)  # 计算损失
+            loss = self.loss_func(log_probs, labels.unsqueeze(1))  # 计算损失
             loss.backward()  # 反向传播计算梯度
 
             # 对梯度进行裁剪，用于差分隐私

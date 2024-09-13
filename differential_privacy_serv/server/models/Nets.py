@@ -109,12 +109,12 @@ class CharLSTM(nn.Module):
 
 
 class LSTMPredictor(nn.Module):
-    def __init__(self, input_size=8, hidden_size=64, output_size=1, num_layers=1):
-        super().__init__()
+    def __init__(self):
+        super(LSTMPredictor, self).__init__()
         # 定义 LSTM 层，输入为时间步的特征维度，隐藏层单元数，层数为可配置
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.lstm = DPLSTM(8, 64, 1, batch_first=True)
         # 定义全连接层，用于将 LSTM 的输出映射到最终的输出维度
-        self.out = nn.Linear(hidden_size, output_size)
+        self.out = nn.Linear(64, 1)
         # 激活函数使用 ReLU
         self.act = nn.ReLU()
 
