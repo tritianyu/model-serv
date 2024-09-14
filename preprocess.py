@@ -2,7 +2,7 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 
 # 设定文件路径
-input_file = '/Users/cuitianyu/Desktop/1.xlsx'
+input_file = '/Users/cuitianyu/Desktop/3.xlsx'
 output_file = 'normalized.xlsx'
 
 # 读取Excel文件

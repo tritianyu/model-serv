@@ -791,7 +791,7 @@ def handle_dp(project_job_id, dataset_file_path):
 
 
 # HE 处理函数
-def handle_he(projectJobId, model_data):
+def handle_he(projectJobId, dataset_file_path):
     he_path = os.path.join('saved_models', 'he_models', f"{projectJobId}results_HE.json")
     if not os.path.exists(he_path):
         return {"error": f"HE结果文件不存在: {he_path}"}, 400
@@ -805,8 +805,11 @@ def handle_he(projectJobId, model_data):
 
     # 假设 he_data 包含 "input" 和 "model_weights" 字段
     try:
-        input_vector = np.array(he_data["input"])
-        model_weights = np.array(he_data["model_weights"])
+        df = pd.read_excel(dataset_file_path)
+        input_vector = df.iloc[:, 1:-1].values
+        input_vector = np.array(input_vector)
+        input_vector = np.concatenate((input_vector, np.ones((input_vector.shape[0], 1))), axis=1)
+        model_weights = np.array(he_data["model_parameter"])
     except KeyError as e:
         return {"error": f"缺少字段: {e}"}, 400
     except Exception as e:
@@ -814,7 +817,8 @@ def handle_he(projectJobId, model_data):
 
     # 进行点乘操作
     try:
-        prediction = np.dot(input_vector, model_weights).tolist()
+        prediction = input_vector.dot(model_weights).flatten()
+        prediction = [float(p) for p in prediction]
     except Exception as e:
         return {"error": f"进行点乘操作时出错: {e}"}, 500
 
