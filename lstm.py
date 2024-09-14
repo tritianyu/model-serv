@@ -56,20 +56,27 @@ class ExcelDataset(Dataset):
 
 
 # 定义不含差分隐私的 LSTM 模型
+
 class LSTMPredictor(nn.Module):
-    def __init__(self, input_size=8, hidden_size=64, output_size=1, num_layers=1):
+    def __init__(self):
         super(LSTMPredictor, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.out = nn.Linear(hidden_size, output_size)
+        # 定义 LSTM 层，输入为时间步的特征维度，隐藏层单元数，层数为可配置
+        self.lstm = nn.LSTM(8, 64, 1, batch_first=True)
+        # 定义全连接层，用于将 LSTM 的输出映射到最终的输出维度
+        self.out = nn.Linear(64, 1)
+        # 激活函数使用 ReLU
         self.act = nn.ReLU()
 
     def forward(self, x):
+        # LSTM expects input of shape (batch_size, sequence_length, input_size)
+        # LSTM 的输入形状为 (batch_size, 时间步, 特征维度)
         x, _ = self.lstm(x)
+        # 取最后一个时间步的输出
         x = x[:, -1, :]
+        # 全连接层 + 激活函数
         x = self.act(x)
         x = self.out(x)
         return x
-
 
 # 定义训练函数
 def train_model(model, device, train_loader, optimizer, criterion, epoch):
@@ -116,8 +123,8 @@ def save_model(model, path):
 
 
 # 定义模型加载函数
-def load_model(path, device, input_size=8, hidden_size=64, output_size=1, num_layers=1):
-    model = LSTMPredictor(input_size, hidden_size, output_size, num_layers)
+def load_model(path, device):
+    model = LSTMPredictor()
     model.load_state_dict(torch.load(path, map_location=device))
     model.to(device)
     model.eval()
@@ -201,8 +208,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
 
     # 实例化模型
-    model = LSTMPredictor(input_size=dataset.features.shape[1], hidden_size=config["hidden_size"],
-                          output_size=config["output_size"], num_layers=config["num_layers"])
+    model = LSTMPredictor()
     model.to(config["device"])
 
     # 定义损失函数和优化器
@@ -218,11 +224,7 @@ def main():
     save_model(model, config["model_save_path"])
 
     # 加载模型并进行预测
-    loaded_model = load_model(config["model_save_path"], config["device"],
-                              input_size=dataset.features.shape[1],
-                              hidden_size=config["hidden_size"],
-                              output_size=config["output_size"],
-                              num_layers=config["num_layers"])
+    loaded_model = load_model(config["model_save_path"], config["device"])
 
     # 使用测试集进行预测并保存结果
     predict_and_save(loaded_model, config["device"], test_dataset, config["prediction_save_path"])

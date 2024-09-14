@@ -16,7 +16,7 @@ from flask import Flask, request, jsonify
 
 from differential_privacy_serv.server.utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
 from differential_privacy_serv.server.models.Update import LocalUpdateDP, LocalUpdateDPSerial, ExcelDataset
-from differential_privacy_serv.server.models.Nets import MLP, CNNMnist, CNNCifar, CNNFemnist, CharLSTM, LSTMPredictor
+from differential_privacy_serv.server.models.Nets import CNNMnist, CNNCifar, CharLSTM, LSTMPredictor, LSTMPredictor_noDP
 from differential_privacy_serv.server.models.Fed import FedAvg, FedWeightAvg
 from differential_privacy_serv.server.models.test import test_img
 from differential_privacy_serv.server.utils.dataset import FEMNIST, ShakeSpeare
@@ -651,8 +651,8 @@ def start_dp_server(config):
 
     server_socket.close()
 
-    model = CNNMnist(config["modelParams"]["modelData"])
-    model.load_state_dict(torch.load('DP_model.pth', map_location=torch.device('cpu')))
+    model = LSTMPredictor_noDP()
+    model.load_state_dict(torch.load('LSTMPredictor.pth', map_location=torch.device('cpu')))
     # 计算加密前后模型之间的Pearson相关性系数
     count = 0
     params_diff = []
@@ -704,7 +704,7 @@ def start_dp_server(config):
 
     # os.system('pause')
     # 保存模型
-    torch.save(net_glob.state_dict(), 'global_model.pth')
+    torch.save(net_glob.state_dict(), f'saved_models/dp_models/{config["projectJobId"]}global_model.pth')
 
     conf_file_path = 'results/output_DP.json'
     if os.path.exists(conf_file_path):

@@ -128,3 +128,26 @@ class LSTMPredictor(nn.Module):
         x = self.act(x)
         x = self.out(x)
         return x
+
+
+
+class LSTMPredictor_noDP(nn.Module):
+    def __init__(self):
+        super(LSTMPredictor_noDP, self).__init__()
+        # 定义 LSTM 层，输入为时间步的特征维度，隐藏层单元数，层数为可配置
+        self.lstm = nn.LSTM(8, 64, 1, batch_first=True)
+        # 定义全连接层，用于将 LSTM 的输出映射到最终的输出维度
+        self.out = nn.Linear(64, 1)
+        # 激活函数使用 ReLU
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        # LSTM expects input of shape (batch_size, sequence_length, input_size)
+        # LSTM 的输入形状为 (batch_size, 时间步, 特征维度)
+        x, _ = self.lstm(x)
+        # 取最后一个时间步的输出
+        x = x[:, -1, :]
+        # 全连接层 + 激活函数
+        x = self.act(x)
+        x = self.out(x)
+        return x
