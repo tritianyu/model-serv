@@ -1,6 +1,6 @@
 import requests
 
-BASE_URL = "http://127.0.0.1:5001"  # 请根据实际情况修改
+BASE_URL = "http://127.0.0.1:5002"  # 请根据实际情况修改
 
 
 def send_data_and_get_response():
@@ -9,20 +9,20 @@ def send_data_and_get_response():
     "projectJobId": "1780926403611033645",
     "role": "server",
     "baseConfig": {
-        "modelControlUrl": "127.0.0.1",
+        "modelControlUrl": '192.168.1.186',
         "modelCalUrlList": [
             {
-                "userId": "129",
+                "userId": "131",
                 "url": "127.0.0.1",
                 "isInitiator": False
             },
             {
-                "userId": "666",
-                "url": "127.0.0.1",
+                "userId": "130",
+                "url": "'192.168.1.186'",
                 "isInitiator": True
             },
             {
-                "userId": "1",
+                "userId": "132",
                 "url": "127.0.0.1",
                 "isInitiator": False
             }
@@ -33,7 +33,7 @@ def send_data_and_get_response():
         "dataSet": {
             "projectOrgans": [
                 {
-                    "userId": "129",
+                    "userId": "131",
                     "userType": 2,
                     "resource": [
                         {
@@ -52,7 +52,7 @@ def send_data_and_get_response():
                     ]
                 },
                 {
-                    "userId": "666",
+                    "userId": "130",
                     "userType": 1,
                     "resource": [
                         {
@@ -71,7 +71,7 @@ def send_data_and_get_response():
                     ]
                 },
                 {
-                    "userId": "1",
+                    "userId": "132",
                     "userType": 2,
                     "resource": [
                         {
@@ -92,7 +92,7 @@ def send_data_and_get_response():
             ]
         },
         "modelData": {
-                "epochs": 15,
+                "epochs": 2,
             "securityProtocol": "dp",
     "num_users": 1,
     "frac": 1,
@@ -111,10 +111,10 @@ def send_data_and_get_response():
     "dp_delta": 1e-5,
     "dp_clip": 10,
     "dp_sample": 1,
-    "serial": False,
+    "serial": "False",
     "serial_bs": 128,
     "batch_size": 64,
-    "user": [0, 1]
+    "user": "[0, 1]"
         }
     }
 }

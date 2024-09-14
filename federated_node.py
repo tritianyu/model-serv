@@ -5,7 +5,7 @@ import pickle
 import random
 import socket
 import time
-
+from torch.utils.data import DataLoader
 import copy
 import numpy as np
 from torchvision import datasets, transforms
@@ -27,141 +27,6 @@ import threading
 
 app = Flask(__name__)
 client1_id = '127.0.0.1'
-
-
-class Server(object):
-    public_key, private_key = paillier.generate_paillier_keypair(n_length=1024)
-
-    def __init__(self, conf, eval_dataset):
-
-        self.conf = conf
-
-        self.global_model = models.LR_Model(public_key=Server.public_key, w_size=int(self.conf["modelParams"]["modelData"]["feature_num"]) + 1)
-
-        self.eval_x = eval_dataset[0]
-
-        self.eval_y = eval_dataset[1]
-
-    def model_aggregate(self, weight_accumulator):
-
-        for id, data in enumerate(self.global_model.encrypt_weights):
-            update_per_layer = weight_accumulator[id] * self.conf["modelParams"]["modelData"]["lambda"]
-
-            self.global_model.encrypt_weights[id] = self.global_model.encrypt_weights[id] + update_per_layer
-
-    def model_eval(self):
-        from sklearn.metrics import mean_absolute_error
-        total_relative_error = 0.0
-        total_loss = 0.0
-        correct = 0
-        dataset_size = 0
-
-        batch_num = int(self.eval_x.shape[0] / self.conf["modelParams"]["modelData"]["batch_size"])
-        # print("本轮加密的全局模型参数：")
-        # print(self.global_model.encrypt_weights[0].ciphertext())
-
-        self.global_model.weights = models.decrypt_vector(Server.private_key, self.global_model.encrypt_weights)
-        print("本轮全局模型参数：")
-        print(self.global_model.weights)
-        all_pred = []
-        all_true = []
-        for batch_id in range(batch_num):
-            x = self.eval_x[batch_id * self.conf["modelParams"]["modelData"]["batch_size"]: (batch_id + 1) * self.conf["modelParams"]["modelData"]["batch_size"]]
-            x = np.concatenate((x, np.ones((x.shape[0], 1))), axis=1)
-            y = self.eval_y[batch_id * self.conf["modelParams"]["modelData"]["batch_size"]: (batch_id + 1) * self.conf["modelParams"]["modelData"]["batch_size"]].reshape(
-                (-1, 1))
-
-            dataset_size += x.shape[0]
-
-            wxs = x.dot(self.global_model.weights)
-
-            # pred_y = [1.0 / (1 + np.exp(-wx)) for wx in wxs]
-            #
-            # # print(pred_y)
-            #
-            # pred_y = np.array([1 if pred > 0.5 else -1 for pred in pred_y]).reshape((-1, 1))
-            pred_y = wxs
-            # print(y)
-            # print(pred_y)
-            # correct += np.sum(y == pred_y)
-            # 计算相对误差
-            pred_y = wxs.flatten()
-            true_y = y.flatten()
-            all_pred.extend(pred_y)
-            all_true.extend(true_y)
-            # print(y)
-            # print(pred_y)
-            # correct += np.sum(y == pred_y)
-            # 计算相对误差
-            relative_error = np.abs((pred_y - y) / y)
-            total_relative_error += np.sum(relative_error)
-
-        # print(correct, dataset_size)
-        # acc = 100.0 * (float(correct) / float(dataset_size))
-        # total_loss = total_loss / dataset_size
-        # 计算平均相对误差
-        mae = mean_absolute_error(all_true, all_pred)
-
-        return mae, self.global_model.weights
-
-    @staticmethod
-    def re_encrypt(w):
-        return models.encrypt_vector(Server.public_key, models.decrypt_vector(Server.private_key, w))
-
-
-class Client(object):
-
-    def __init__(self, conf, public_key, weights, data_x, data_y, num):
-
-        self.conf = conf
-
-        self.num = num
-
-        self.public_key = public_key
-
-        self.local_model = models.LR_Model(public_key=self.public_key, w=weights, encrypted=True)
-
-        self.data_x = data_x
-
-        self.data_y = data_y
-
-    def local_train(self, weights):
-
-        print(f"----------客户端{self.num}开始训练----------")
-
-        original_w = weights
-        self.local_model.set_encrypt_weights(weights)
-
-        neg_one = self.public_key.encrypt(-1)
-
-        for e in range(self.conf["modelParams"]["modelData"]["local_epochs"]):
-            print("正在进行本地训练的轮数：", e + 1)
-            if e > 0 and e % 2 == 0:
-                self.local_model.encrypt_weights = Server.re_encrypt(self.local_model.encrypt_weights)
-
-            idx = np.arange(self.data_x.shape[0])
-            if len(idx) == 0:
-                raise ValueError(f"Client {self.num} has no data to train on.")
-
-            batch_idx = np.random.choice(idx, self.conf["modelParams"]["modelData"]['batch_size'], replace=False)
-            # print(batch_idx)
-
-            x = self.data_x[batch_idx]
-            x = np.concatenate((x, np.ones((x.shape[0], 1))), axis=1)
-            y = self.data_y[batch_idx].reshape((-1, 1))
-
-            batch_encrypted_grad = x.transpose() * (
-                    0.25 * x.dot(self.local_model.encrypt_weights) + 0.5 * y.transpose() * neg_one)
-            encrypted_grad = batch_encrypted_grad.sum(axis=1) / y.shape[0]
-
-            for j in range(len(self.local_model.encrypt_weights)):
-                self.local_model.encrypt_weights[j] -= self.conf["modelParams"]["modelData"]["lr"] * encrypted_grad[j]
-
-        weight_accumulators = []
-        for j in range(len(self.local_model.encrypt_weights)):
-            weight_accumulators.append(self.local_model.encrypt_weights[j] - original_w[j])
-
-        return weight_accumulators
 
 
 # 首页路由，通常用来检查服务是否正常运行
@@ -200,6 +65,29 @@ def process_data():
     else:
         return jsonify({"message": "Invalid security protocol"}), 400
 
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    try:
+        data = request.json
+        app.logger.info(f"Received request data: {data}")
+        # 提取 projectJobId 和 modelData
+        # 提取所需参数
+        model_type = data['modelParams'].get('modelType')
+        project_job_id = data.get('projectJobId')
+        dataset_file_path = data['modelParams']['dataSet'][0]['providerOrganIds'][0].get('dataSetFilePath')
+
+        if model_type == "dp":
+            return handle_dp(project_job_id, dataset_file_path)
+
+        elif model_type == "he":
+            return handle_he(project_job_id, dataset_file_path)
+
+        else:
+            return jsonify({"error": f"未知的 'securityProtocol': {model_type}"}), 400
+
+    except Exception as e:
+        return jsonify({"error": f"服务器内部错误: {e}"}), 500
 
 def start_he_server(config):
 
@@ -432,17 +320,34 @@ def start_he_client(config):
 def start_dp_server(config):
 
     app.logger.info(f"Server received config data: {config}")
+    model_data = config["modelParams"]["modelData"]
+
+    # 1. 转换为 int 类型
+    model_data["epochs"] = int(model_data["epochs"])
+    model_data["num_users"] = int(model_data["num_users"])
+    model_data["bs"] = int(model_data["bs"])
+    model_data["num_classes"] = int(model_data["num_classes"])
+    model_data["num_channels"] = int(model_data["num_channels"])
+    model_data["gpu"] = int(model_data["gpu"])
+    model_data["serial_bs"] = int(model_data["serial_bs"])
+    model_data["batch_size"] = int(model_data["batch_size"])
+
+    # 2. 转换为 float 类型
+    model_data["frac"] = float(model_data["frac"])
+    model_data["lr"] = float(model_data["lr"])
+    model_data["lr_decay"] = float(model_data["lr_decay"])
+    model_data["momentum"] = float(model_data["momentum"])
+    model_data["dp_epsilon"] = float(model_data["dp_epsilon"])
+    model_data["dp_delta"] = float(model_data["dp_delta"])
+    model_data["dp_clip"] = float(model_data["dp_clip"])
+    model_data["dp_sample"] = float(model_data["dp_sample"])
+    model_data["user"] = list(model_data["user"])
     # 获取请求中的JSON数据
     random.seed(123)
     np.random.seed(123)
     torch.manual_seed(123)
     torch.cuda.manual_seed_all(123)
     torch.cuda.manual_seed(123)
-    # config替换为modelParams
-
-    # model = CNNMnist(args)
-    # model.load_state_dict(torch.load('DP_model.pth'))
-    # model.eval()
     matching_entry = None
     for entry in config['baseConfig']['modelCalUrlList']:
         if entry['url'] == client1_id:
@@ -579,9 +484,9 @@ def start_dp_server(config):
             thread = threading.Thread(target=send_request, args=(client_url, config))
             threads.append(thread)
             thread.start()"""
-            if user_id == 1:
-                client_url = f'http://{url}:5002/process_data'
-            elif user_id == 129:
+            if user_id == 132:
+                client_url = f'http://{url}:5001/process_data'
+            elif user_id == 131:
                 client_url = f'http://{url}:5003/process_data'
             thread = threading.Thread(target=send_request, args=(client_url, config))
             print(config)
@@ -674,7 +579,8 @@ def start_dp_server(config):
     # print(params_diff[1092])
 
     filename = 'result/output_DP.json'
-    data_dict = {'准确率%': acc_list, '损失': loss_list, '识别率%': recognition_rate}
+
+    data_dict = {"global_epochs": config["modelParams"]["modelData"]["epochs"], "model_parameter": [], "Accuracy": loss_list, "recognize_rate": recognition_rate}
     # 使用 'with' 语句打开文件，创建一个文件对象 file_obj
     with open('results/output_DP.json', 'w', encoding='utf-8') as file_obj:
         # 使用 json.dump() 将数据列表写入文件
@@ -704,18 +610,14 @@ def start_dp_server(config):
 
     # os.system('pause')
     # 保存模型
-    torch.save(net_glob.state_dict(), f'saved_models/dp_models/{config["projectJobId"]}global_model.pth')
+    torch.save(net_glob._module.state_dict(), f'saved_models/dp_models/{config["projectJobId"]}global_model.pth')
 
     conf_file_path = 'results/output_DP.json'
     if os.path.exists(conf_file_path):
         with open(conf_file_path, 'r') as conf_file:
             result_data = json.load(conf_file)
     # 构建响应数据
-    response = {
-        "original_data": config,
-        "processed_data": result_data,
-        "message": "Data processed successfully"
-    }
+    response = {"processed_data": result_data, "message": "Data processed successfully"}
     # 返回JSON响应
     return response
 
@@ -840,6 +742,84 @@ def start_dp_client(config):
     client_socket.close()
 
 
+# DP 处理函数
+def handle_dp(project_job_id, dataset_file_path):
+    model_path = os.path.join('saved_models', 'dp_models', f"{project_job_id}global_model.pth")
+    if not os.path.exists(model_path):
+        return {"error": f"模型文件不存在: {model_path}"}, 400
+
+    # 加载模型
+    try:
+        model = LSTMPredictor()
+        model.load_state_dict(torch.load(f'saved_models/dp_models/{project_job_id}global_model.pth', map_location='cpu'))
+        model.eval()
+    except Exception as e:
+        return {"error": f"加载模型时出错: {e}"}, 500
+
+    # 处理输入数据
+    try:
+        class ToTensor1D(object):
+            def __call__(self, feature):
+                return torch.tensor(feature, dtype=torch.float32)
+        feature_transform = transforms.Compose([
+            ToTensor1D(),
+        ])
+        dataset = ExcelDataset(file_path=dataset_file_path, transform=feature_transform)
+        data_loader = DataLoader(dataset, batch_size=32, shuffle=False)
+    except Exception as e:
+        return {"error": f"处理输入数据时出错: {e}"}, 400
+
+    # 预测
+    try:
+        predictions = []
+        with torch.no_grad():
+            for features, labels in data_loader:
+                data = features.to("cpu")
+                outputs = model(data)
+                outputs = outputs.cpu().numpy().flatten()
+                predictions.extend(outputs)
+        # 将 numpy.float32 转换为标准 float
+        predictions = [float(p) for p in predictions]
+        # df_predictions = pd.DataFrame({
+        #         'Prediction': predictions
+        #     })
+        # print(df_predictions)
+    except Exception as e:
+        return {"error": f"进行预测时出错: {e}"}, 500
+
+    return {"predictions": predictions}, 200
+
+
+# HE 处理函数
+def handle_he(projectJobId, model_data):
+    he_path = os.path.join('saved_models', 'he_models', f"{projectJobId}results_HE.json")
+    if not os.path.exists(he_path):
+        return {"error": f"HE结果文件不存在: {he_path}"}, 400
+
+    # 加载 HE 数据
+    try:
+        with open(he_path, 'r') as f:
+            he_data = json.load(f)
+    except Exception as e:
+        return {"error": f"加载 HE 数据时出错: {e}"}, 500
+
+    # 假设 he_data 包含 "input" 和 "model_weights" 字段
+    try:
+        input_vector = np.array(he_data["input"])
+        model_weights = np.array(he_data["model_weights"])
+    except KeyError as e:
+        return {"error": f"缺少字段: {e}"}, 400
+    except Exception as e:
+        return {"error": f"处理 HE 数据时出错: {e}"}, 400
+
+    # 进行点乘操作
+    try:
+        prediction = np.dot(input_vector, model_weights).tolist()
+    except Exception as e:
+        return {"error": f"进行点乘操作时出错: {e}"}, 500
+
+    return {"prediction": prediction}, 200
+
 
 def dataset_iid(dataset, num_users):
     """
@@ -892,6 +872,140 @@ def send_request(client_url, data):
         print(f"Response from {client_url}: {response.status_code}")
     except requests.exceptions.RequestException as e:
         print(f"Request to {client_url} failed: {e}")
+
+class Server(object):
+    public_key, private_key = paillier.generate_paillier_keypair(n_length=1024)
+
+    def __init__(self, conf, eval_dataset):
+
+        self.conf = conf
+
+        self.global_model = models.LR_Model(public_key=Server.public_key, w_size=int(self.conf["modelParams"]["modelData"]["feature_num"]) + 1)
+
+        self.eval_x = eval_dataset[0]
+
+        self.eval_y = eval_dataset[1]
+
+    def model_aggregate(self, weight_accumulator):
+
+        for id, data in enumerate(self.global_model.encrypt_weights):
+            update_per_layer = weight_accumulator[id] * self.conf["modelParams"]["modelData"]["lambda"]
+
+            self.global_model.encrypt_weights[id] = self.global_model.encrypt_weights[id] + update_per_layer
+
+    def model_eval(self):
+        from sklearn.metrics import mean_absolute_error
+        total_relative_error = 0.0
+        total_loss = 0.0
+        correct = 0
+        dataset_size = 0
+
+        batch_num = int(self.eval_x.shape[0] / self.conf["modelParams"]["modelData"]["batch_size"])
+        # print("本轮加密的全局模型参数：")
+        # print(self.global_model.encrypt_weights[0].ciphertext())
+
+        self.global_model.weights = models.decrypt_vector(Server.private_key, self.global_model.encrypt_weights)
+        print("本轮全局模型参数：")
+        print(self.global_model.weights)
+        all_pred = []
+        all_true = []
+        for batch_id in range(batch_num):
+            x = self.eval_x[batch_id * self.conf["modelParams"]["modelData"]["batch_size"]: (batch_id + 1) * self.conf["modelParams"]["modelData"]["batch_size"]]
+            x = np.concatenate((x, np.ones((x.shape[0], 1))), axis=1)
+            y = self.eval_y[batch_id * self.conf["modelParams"]["modelData"]["batch_size"]: (batch_id + 1) * self.conf["modelParams"]["modelData"]["batch_size"]].reshape(
+                (-1, 1))
+
+            dataset_size += x.shape[0]
+
+            wxs = x.dot(self.global_model.weights)
+
+            # pred_y = [1.0 / (1 + np.exp(-wx)) for wx in wxs]
+            #
+            # # print(pred_y)
+            #
+            # pred_y = np.array([1 if pred > 0.5 else -1 for pred in pred_y]).reshape((-1, 1))
+            pred_y = wxs
+            # print(y)
+            # print(pred_y)
+            # correct += np.sum(y == pred_y)
+            # 计算相对误差
+            pred_y = wxs.flatten()
+            true_y = y.flatten()
+            all_pred.extend(pred_y)
+            all_true.extend(true_y)
+            # print(y)
+            # print(pred_y)
+            # correct += np.sum(y == pred_y)
+            # 计算相对误差
+            relative_error = np.abs((pred_y - y) / y)
+            total_relative_error += np.sum(relative_error)
+
+        # print(correct, dataset_size)
+        # acc = 100.0 * (float(correct) / float(dataset_size))
+        # total_loss = total_loss / dataset_size
+        # 计算平均相对误差
+        mae = mean_absolute_error(all_true, all_pred)
+
+        return mae, self.global_model.weights
+
+    @staticmethod
+    def re_encrypt(w):
+        return models.encrypt_vector(Server.public_key, models.decrypt_vector(Server.private_key, w))
+
+
+class Client(object):
+
+    def __init__(self, conf, public_key, weights, data_x, data_y, num):
+
+        self.conf = conf
+
+        self.num = num
+
+        self.public_key = public_key
+
+        self.local_model = models.LR_Model(public_key=self.public_key, w=weights, encrypted=True)
+
+        self.data_x = data_x
+
+        self.data_y = data_y
+
+    def local_train(self, weights):
+
+        print(f"----------客户端{self.num}开始训练----------")
+
+        original_w = weights
+        self.local_model.set_encrypt_weights(weights)
+
+        neg_one = self.public_key.encrypt(-1)
+
+        for e in range(self.conf["modelParams"]["modelData"]["local_epochs"]):
+            print("正在进行本地训练的轮数：", e + 1)
+            if e > 0 and e % 2 == 0:
+                self.local_model.encrypt_weights = Server.re_encrypt(self.local_model.encrypt_weights)
+
+            idx = np.arange(self.data_x.shape[0])
+            if len(idx) == 0:
+                raise ValueError(f"Client {self.num} has no data to train on.")
+
+            batch_idx = np.random.choice(idx, self.conf["modelParams"]["modelData"]['batch_size'], replace=False)
+            # print(batch_idx)
+
+            x = self.data_x[batch_idx]
+            x = np.concatenate((x, np.ones((x.shape[0], 1))), axis=1)
+            y = self.data_y[batch_idx].reshape((-1, 1))
+
+            batch_encrypted_grad = x.transpose() * (
+                    0.25 * x.dot(self.local_model.encrypt_weights) + 0.5 * y.transpose() * neg_one)
+            encrypted_grad = batch_encrypted_grad.sum(axis=1) / y.shape[0]
+
+            for j in range(len(self.local_model.encrypt_weights)):
+                self.local_model.encrypt_weights[j] -= self.conf["modelParams"]["modelData"]["lr"] * encrypted_grad[j]
+
+        weight_accumulators = []
+        for j in range(len(self.local_model.encrypt_weights)):
+            weight_accumulators.append(self.local_model.encrypt_weights[j] - original_w[j])
+
+        return weight_accumulators
 
 
 if __name__ == '__main__':

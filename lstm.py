@@ -57,9 +57,9 @@ class ExcelDataset(Dataset):
 
 # 定义不含差分隐私的 LSTM 模型
 
-class LSTMPredictor(nn.Module):
+class LSTMPredictor_noDP(nn.Module):
     def __init__(self):
-        super(LSTMPredictor, self).__init__()
+        super(LSTMPredictor_noDP, self).__init__()
         # 定义 LSTM 层，输入为时间步的特征维度，隐藏层单元数，层数为可配置
         self.lstm = nn.LSTM(8, 64, 1, batch_first=True)
         # 定义全连接层，用于将 LSTM 的输出映射到最终的输出维度
@@ -124,7 +124,7 @@ def save_model(model, path):
 
 # 定义模型加载函数
 def load_model(path, device):
-    model = LSTMPredictor()
+    model = LSTMPredictor_noDP()
     model.load_state_dict(torch.load(path, map_location=device))
     model.to(device)
     model.eval()
@@ -208,7 +208,7 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=config["batch_size"], shuffle=False)
 
     # 实例化模型
-    model = LSTMPredictor()
+    model = LSTMPredictor_noDP()
     model.to(config["device"])
 
     # 定义损失函数和优化器
