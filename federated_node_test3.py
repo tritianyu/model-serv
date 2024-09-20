@@ -540,7 +540,7 @@ def start_dp_server(config):
 
         net_glob.eval()
         # acc_t, loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
-        loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
+        loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])/100
         t_end = time.time()
         # print("Round {:3d},Testing accuracy: {:.2f},Loss：{:.5f}, Time:  {:.2f}s".format(iter, acc_t, loss_t,
         #                                                                                 t_end - t_start))
@@ -877,6 +877,7 @@ def send_request(client_url, data):
     except requests.exceptions.RequestException as e:
         print(f"Request to {client_url} failed: {e}")
 
+
 class Server(object):
     public_key, private_key = paillier.generate_paillier_keypair(n_length=1024)
 
@@ -950,7 +951,7 @@ class Server(object):
         # 计算平均相对误差
         mae = mean_absolute_error(all_true, all_pred)
 
-        return mae, self.global_model.weights
+        return mae/100, self.global_model.weights
 
     @staticmethod
     def re_encrypt(w):

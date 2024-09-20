@@ -26,7 +26,8 @@ import threading
 
 
 app = Flask(__name__)
-client1_id = '192.168.1.105'
+client1_id = '127.0.0.1'
+
 
 # 首页路由，通常用来检查服务是否正常运行
 @app.route('/')
@@ -88,7 +89,6 @@ def predict():
     except Exception as e:
         return jsonify({"error": f"服务器内部错误: {e}"}), 500
 
-
 def start_he_server(config):
 
     app.logger.info(f"Server received config data: {config}")
@@ -135,14 +135,18 @@ def start_he_server(config):
                     continue
             else:
                 # 实际用这个
-                client_url = f'http://{url}:5002/process_data'
+                """
+                    client_url = f'http://{url}:5000/process_data'
+                thread = threading.Thread(target=send_request, args=(client_url, config))
+                threads.append(thread)
+                thread.start()"""
                 print("这是客户端")
-                # if user_id == 131:
-                #     client_url = f'http://{url}:5001/process_data'
-                #     print(client_url)
-                # elif user_id == 132:
-                #     client_url = f'http://{url}:5003/process_data'
-                #     print(client_url)
+                if user_id == 131:
+                    client_url = f'http://{url}:5001/process_data'
+                    print(client_url)
+                elif user_id == 132:
+                    client_url = f'http://{url}:5003/process_data'
+                    print(client_url)
                 thread = threading.Thread(target=send_request, args=(client_url, config))
                 threads.append(thread)
                 thread.start()
@@ -475,11 +479,15 @@ def start_dp_server(config):
             continue
         else:
             # 实际用这个
-            client_url = f'http://{url}:5002/process_data'
-            # if user_id == 132:
-            #     client_url = f'http://{url}:5001/process_data'
-            # elif user_id == 131:
-            #     client_url = f'http://{url}:5003/process_data'
+            """
+            client_url = f'http://{url}:5000/process_data'
+            thread = threading.Thread(target=send_request, args=(client_url, config))
+            threads.append(thread)
+            thread.start()"""
+            if user_id == 132:
+                client_url = f'http://{url}:5001/process_data'
+            elif user_id == 131:
+                client_url = f'http://{url}:5003/process_data'
             thread = threading.Thread(target=send_request, args=(client_url, config))
             print(config)
             threads.append(thread)
@@ -617,7 +625,7 @@ def start_dp_server(config):
 def start_dp_client(config):
 
     # get local ip
-
+    local_client_ip = '127.0.0.1'
     app.logger.info(f"Client received config data: {config}")
     # parse args
     random.seed(123)
@@ -712,7 +720,7 @@ def start_dp_client(config):
             break
         data = pickle.loads(data)
 
-        model_and_loss = data[client1_id]
+        model_and_loss = data[local_client_ip]
         w = model_and_loss[1]
 
         if config["modelParams"]["modelData"]["serial"]:
@@ -723,7 +731,7 @@ def start_dp_client(config):
 
         # net_glob = CNNMnist(args=config).to(config["device"])
         trained_model, loss_value = local.train(net=copy.deepcopy(w).to(config["device"]))
-        data[client1_id] = [len(dict_users[0]), trained_model, loss_value]
+        data[local_client_ip] = [len(dict_users[0]), trained_model, loss_value]
 
         print("客户端 2 训练结束，准备上传模型......")
         # 发送处理后的数据
@@ -833,8 +841,6 @@ def dataset_iid(dataset, num_users):
         end_idx = start_idx + num_items
         dict_users[i] = set(all_indices[start_idx:end_idx])
     return dict_users
-
-
 def dataset_noniid(dataset, num_users):
     """
     Sample non-I.I.D client data from the given dataset
@@ -864,14 +870,12 @@ def dataset_noniid(dataset, num_users):
         dict_users[i] = set(user_indices)
     return dict_users
 
-
 def send_request(client_url, data):
     try:
         response = requests.post(client_url, json=data)
         print(f"Response from {client_url}: {response.status_code}")
     except requests.exceptions.RequestException as e:
         print(f"Request to {client_url} failed: {e}")
-
 
 class Server(object):
     public_key, private_key = paillier.generate_paillier_keypair(n_length=1024)

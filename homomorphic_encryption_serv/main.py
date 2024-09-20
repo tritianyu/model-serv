@@ -14,9 +14,9 @@ def start_node(directory, script_name):
 def main():
     # 设置要启动的节点及其目录
     nodes = {
-        'server': './server/federated_node.py',
-        'client1': './client1/federated_node.py',
-        'client2': './client2/federated_node.py'
+        'server': './server/federated_node_test.py',
+        'client1': './client1/federated_node_test.py',
+        'client2': './client2/federated_node_test.py'
     }
 
     processes = []

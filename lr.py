@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-
+from sklearn.linear_model import LinearRegression
 
 class LinearRegressionGD:
     """
@@ -34,7 +34,7 @@ class LinearRegressionGD:
             # 预测值
             y_pred = np.dot(X, self.weights) + self.bias
             # 计算损失（均方误差）
-            loss = np.mean((y_pred - y) ** 2)
+            loss = np.mean(abs(y_pred - y))/100
             self.loss_history.append(loss)
 
             # 计算梯度
@@ -112,7 +112,7 @@ def plot_loss(loss_history):
     plt.plot(range(1, len(loss_history) + 1), loss_history, color='blue')
     plt.title('Training Loss Over Epochs')
     plt.xlabel('Epoch')
-    plt.ylabel('Loss (MSE)')
+    plt.ylabel('Loss (MAE)')
     plt.grid(True)
     plt.show()
 
@@ -129,7 +129,7 @@ def main():
     print(f"测试集大小: {X_test.shape[0]} 样本")
 
     # 初始化线性回归模型
-    lr_model = LinearRegressionGD(learning_rate=0.01, epochs=10)
+    lr_model = LinearRegressionGD(learning_rate=0.01, epochs=15)
 
     # 训练模型
     lr_model.fit(X_train, y_train)
@@ -139,10 +139,11 @@ def main():
 
     # 计算均方误差
     mse = np.mean((y_pred - y_test) ** 2)
-    print(f"测试集均方误差 (MSE): {mse:.4f}")
+    print(f"测试集均方误差 (MAE): {mse:.4f}")
 
     # 绘制训练损失下降曲线
     plot_loss(lr_model.loss_history)
+    print(lr_model.loss_history)
 
     # 可选：绘制真实值与预测值的对比图
     plt.figure(figsize=(10, 6))

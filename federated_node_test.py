@@ -89,6 +89,7 @@ def predict():
     except Exception as e:
         return jsonify({"error": f"服务器内部错误: {e}"}), 500
 
+
 def start_he_server(config):
 
     app.logger.info(f"Server received config data: {config}")
@@ -540,7 +541,7 @@ def start_dp_server(config):
 
         net_glob.eval()
         # acc_t, loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
-        loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])
+        loss_t = test_img(net_glob, dataset_test, config["modelParams"]["modelData"])/100
         t_end = time.time()
         # print("Round {:3d},Testing accuracy: {:.2f},Loss：{:.5f}, Time:  {:.2f}s".format(iter, acc_t, loss_t,
         #                                                                                 t_end - t_start))
@@ -841,6 +842,8 @@ def dataset_iid(dataset, num_users):
         end_idx = start_idx + num_items
         dict_users[i] = set(all_indices[start_idx:end_idx])
     return dict_users
+
+
 def dataset_noniid(dataset, num_users):
     """
     Sample non-I.I.D client data from the given dataset
@@ -870,12 +873,14 @@ def dataset_noniid(dataset, num_users):
         dict_users[i] = set(user_indices)
     return dict_users
 
+
 def send_request(client_url, data):
     try:
         response = requests.post(client_url, json=data)
         print(f"Response from {client_url}: {response.status_code}")
     except requests.exceptions.RequestException as e:
         print(f"Request to {client_url} failed: {e}")
+
 
 class Server(object):
     public_key, private_key = paillier.generate_paillier_keypair(n_length=1024)
@@ -950,7 +955,7 @@ class Server(object):
         # 计算平均相对误差
         mae = mean_absolute_error(all_true, all_pred)
 
-        return mae, self.global_model.weights
+        return mae/100, self.global_model.weights
 
     @staticmethod
     def re_encrypt(w):
@@ -1013,6 +1018,6 @@ class Client(object):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5002)
+    app.run(debug=True, host='0.0.0.0', port=5001)
 
 

@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import os
 import copy
+import matplotlib.pyplot as plt
 
 
 # 自定义转换函数
@@ -79,7 +80,7 @@ class LSTMPredictor_noDP(nn.Module):
         return x
 
 # 定义训练函数
-def train_model(model, device, train_loader, optimizer, criterion, epoch):
+def train_model(model, device, train_loader, optimizer, criterion, epoch, train_losses):
     model.train()
     running_loss = 0.0
     for batch_idx, (sample_ids, data, target) in enumerate(train_loader):
@@ -97,11 +98,12 @@ def train_model(model, device, train_loader, optimizer, criterion, epoch):
             print(f"Epoch [{epoch}], Step [{batch_idx + 1}/{len(train_loader)}], Loss: {loss.item():.4f}")
 
     avg_loss = running_loss / len(train_loader)
+    train_losses.append(avg_loss/100)
     print(f"Epoch [{epoch}] 完成，平均损失: {avg_loss:.4f}")
 
 
 # 定义测试函数
-def test_model(model, device, test_loader, criterion):
+def test_model(model, device, test_loader, criterion, test_losses):
     model.eval()
     test_loss = 0.0
     with torch.no_grad():
@@ -111,7 +113,8 @@ def test_model(model, device, test_loader, criterion):
             loss = criterion(output, target)
             test_loss += loss.item()
 
-    avg_test_loss = test_loss / len(test_loader.dataset)
+    avg_test_loss = test_loss / len(test_loader)
+    test_losses.append(avg_test_loss)
     print(f"测试集平均损失: {avg_test_loss:.4f}")
     return avg_test_loss
 
@@ -164,14 +167,27 @@ def predict_and_save(model, device, dataset, save_path):
     df_predictions.to_csv(save_path, index=False)
     print(f"预测结果已保存到 {save_path}")
 
+def plot_loss(train_losses, test_losses):
+    epochs = range(1, len(train_losses) + 1)
+    plt.figure(figsize=(8, 6))
+    # plt.plot(epochs,train_losses, label='Train Loss', marker='o')
+    plt.plot(epochs, test_losses, label='Test Loss', marker='x')
+    plt.title('Training Loss Over Epochs')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
+
+# 主训练流程
 # 主训练流程
 def main():
     # 配置参数
     config = {
         "dataset_file_url": "/Users/cuitianyu/Desktop/1.xlsx",  # 请替换为您的数据文件路径
         "batch_size": 32,
-        "epochs": 20,
+        "epochs": 15,
         "lr": 0.001,
         "hidden_size": 64,
         "output_size": 1,
@@ -212,13 +228,20 @@ def main():
     model.to(config["device"])
 
     # 定义损失函数和优化器
-    criterion = nn.MSELoss()
+    criterion = nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=config["lr"])
+
+    # 保存损失值
+    train_losses = []
+    test_losses = []
 
     # 训练和测试模型
     for epoch in range(1, config["epochs"] + 1):
-        train_model(model, config["device"], train_loader, optimizer, criterion, epoch)
-        test_loss = test_model(model, config["device"], test_loader, criterion)
+        train_model(model, config["device"], train_loader, optimizer, criterion, epoch, train_losses)
+        test_loss = test_model(model, config["device"], test_loader, criterion, test_losses)
+
+    # 绘制损失曲线
+    plot_loss(train_losses, test_losses)
 
     # 保存模型
     save_model(model, config["model_save_path"])
@@ -228,9 +251,6 @@ def main():
 
     # 使用测试集进行预测并保存结果
     predict_and_save(loaded_model, config["device"], test_dataset, config["prediction_save_path"])
-
-    # 如果需要对整个数据集进行预测，您可以这样做：
-    # predict_and_save(loaded_model, config["device"], dataset, "all_predictions.csv")
 
 
 if __name__ == "__main__":
