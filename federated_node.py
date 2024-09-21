@@ -513,17 +513,29 @@ def start_dp_server(config):
         # send_data(client2, pickle.dumps(client_model_mapping))
         for client_socket in client_socket_list:
             updated_data = pickle.loads(recv_data(client_socket))
+            # print(f"收到客户端{client_socket}的数据：{updated_data}")
             for i, model_url in enumerate(non_initiators):
                 if model_url["url"] in updated_data:
                     client_model_mapping[model_url["url"]] = updated_data[model_url["url"]]
                     model_and_loss = client_model_mapping[model_url["url"]]
-                    # 只在 w_locals 中添加对应的元素，确保长度与 weight_locals 一致
-                    if len(weight_locals) == len(w_locals):  # 检查长度是否相等
-                        w_locals[len(weight_locals) - 1] = copy.deepcopy(model_and_loss[1])  # 替换最后一个元素
+                    if model_and_loss[0] != 0:
+                        # Only add the corresponding element to w_locals, ensuring the length matches weight_locals
+                        if len(weight_locals) == len(w_locals):  # Check if lengths are equal
+                            w_locals[len(weight_locals) - 1] = copy.deepcopy(model_and_loss[1])  # Replace last element
+                        else:
+                            w_locals.append(copy.deepcopy(model_and_loss[1]))  # Add an element
+                        loss_locals.append(copy.deepcopy(model_and_loss[2]))
+                        weight_locals[i] = model_and_loss[0]
                     else:
-                        w_locals.append(copy.deepcopy(model_and_loss[1]))  # 添加一个元素
-                    loss_locals.append(copy.deepcopy(model_and_loss[2]))
-                    weight_locals[i] = model_and_loss[0]
+                        # If the first element is zero, skip this entry
+                        continue
+                    # # 只在 w_locals 中添加对应的元素，确保长度与 weight_locals 一致
+                    # if len(weight_locals) == len(w_locals):  # 检查长度是否相等
+                    #     w_locals[len(weight_locals) - 1] = copy.deepcopy(model_and_loss[1])  # 替换最后一个元素
+                    # else:
+                    #     w_locals.append(copy.deepcopy(model_and_loss[1]))  # 添加一个元素
+                    # loss_locals.append(copy.deepcopy(model_and_loss[2]))
+                    # weight_locals[i] = model_and_loss[0]
 
         # updated_data1 = pickle.loads(recv_data(client1))
         # updated_data2 = pickle.loads(recv_data(client2))
@@ -730,6 +742,7 @@ def start_dp_client(config):
         send_data(client_socket, pickle.dumps(data))
         # client_socket.send(pickle.dumps(data))
         print("模型上传完毕\n")
+        print(f"data: {data}")
 
     client_socket.close()
 
