@@ -135,14 +135,14 @@ def start_he_server(config):
                     continue
             else:
                 # 实际用这个
-                client_url = f'http://{url}:5002/process_data'
-                print("这是客户端")
-                # if user_id == 131:
-                #     client_url = f'http://{url}:5001/process_data'
-                #     print(client_url)
-                # elif user_id == 132:
-                #     client_url = f'http://{url}:5003/process_data'
-                #     print(client_url)
+                # client_url = f'http://{url}:5002/process_data'
+                # print("这是客户端")
+                if user_id == 131:
+                    client_url = f'http://{url}:5001/process_data'
+                    print(client_url)
+                elif user_id == 132:
+                    client_url = f'http://{url}:5003/process_data'
+                    print(client_url)
                 thread = threading.Thread(target=send_request, args=(client_url, config))
                 threads.append(thread)
                 thread.start()

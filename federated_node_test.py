@@ -28,7 +28,6 @@ import threading
 app = Flask(__name__)
 client1_id = '127.0.0.1'
 
-
 # 首页路由，通常用来检查服务是否正常运行
 @app.route('/')
 def index():
@@ -136,12 +135,8 @@ def start_he_server(config):
                     continue
             else:
                 # 实际用这个
-                """
-                    client_url = f'http://{url}:5000/process_data'
-                thread = threading.Thread(target=send_request, args=(client_url, config))
-                threads.append(thread)
-                thread.start()"""
-                print("这是客户端")
+                # client_url = f'http://{url}:5002/process_data'
+                # print("这是客户端")
                 if user_id == 131:
                     client_url = f'http://{url}:5001/process_data'
                     print(client_url)
@@ -480,15 +475,11 @@ def start_dp_server(config):
             continue
         else:
             # 实际用这个
-            """
-            client_url = f'http://{url}:5000/process_data'
-            thread = threading.Thread(target=send_request, args=(client_url, config))
-            threads.append(thread)
-            thread.start()"""
-            if user_id == 132:
-                client_url = f'http://{url}:5001/process_data'
-            elif user_id == 131:
-                client_url = f'http://{url}:5003/process_data'
+            client_url = f'http://{url}:5002/process_data'
+            # if user_id == 132:
+            #     client_url = f'http://{url}:5001/process_data'
+            # elif user_id == 131:
+            #     client_url = f'http://{url}:5003/process_data'
             thread = threading.Thread(target=send_request, args=(client_url, config))
             print(config)
             threads.append(thread)
@@ -522,17 +513,29 @@ def start_dp_server(config):
         # send_data(client2, pickle.dumps(client_model_mapping))
         for client_socket in client_socket_list:
             updated_data = pickle.loads(recv_data(client_socket))
+            # print(f"收到客户端{client_socket}的数据：{updated_data}")
             for i, model_url in enumerate(non_initiators):
                 if model_url["url"] in updated_data:
                     client_model_mapping[model_url["url"]] = updated_data[model_url["url"]]
                     model_and_loss = client_model_mapping[model_url["url"]]
-                    # 只在 w_locals 中添加对应的元素，确保长度与 weight_locals 一致
-                    if len(weight_locals) == len(w_locals):  # 检查长度是否相等
-                        w_locals[len(weight_locals) - 1] = copy.deepcopy(model_and_loss[1])  # 替换最后一个元素
+                    if model_and_loss[0] != 0:
+                        # Only add the corresponding element to w_locals, ensuring the length matches weight_locals
+                        if len(weight_locals) == len(w_locals):  # Check if lengths are equal
+                            w_locals[len(weight_locals) - 1] = copy.deepcopy(model_and_loss[1])  # Replace last element
+                        else:
+                            w_locals.append(copy.deepcopy(model_and_loss[1]))  # Add an element
+                        loss_locals.append(copy.deepcopy(model_and_loss[2]))
+                        weight_locals[i] = model_and_loss[0]
                     else:
-                        w_locals.append(copy.deepcopy(model_and_loss[1]))  # 添加一个元素
-                    loss_locals.append(copy.deepcopy(model_and_loss[2]))
-                    weight_locals[i] = model_and_loss[0]
+                        # If the first element is zero, skip this entry
+                        continue
+                    # # 只在 w_locals 中添加对应的元素，确保长度与 weight_locals 一致
+                    # if len(weight_locals) == len(w_locals):  # 检查长度是否相等
+                    #     w_locals[len(weight_locals) - 1] = copy.deepcopy(model_and_loss[1])  # 替换最后一个元素
+                    # else:
+                    #     w_locals.append(copy.deepcopy(model_and_loss[1]))  # 添加一个元素
+                    # loss_locals.append(copy.deepcopy(model_and_loss[2]))
+                    # weight_locals[i] = model_and_loss[0]
 
         # updated_data1 = pickle.loads(recv_data(client1))
         # updated_data2 = pickle.loads(recv_data(client2))
@@ -626,7 +629,7 @@ def start_dp_server(config):
 def start_dp_client(config):
 
     # get local ip
-    local_client_ip = '127.0.0.1'
+
     app.logger.info(f"Client received config data: {config}")
     # parse args
     random.seed(123)
@@ -721,7 +724,7 @@ def start_dp_client(config):
             break
         data = pickle.loads(data)
 
-        model_and_loss = data[local_client_ip]
+        model_and_loss = data[client1_id]
         w = model_and_loss[1]
 
         if config["modelParams"]["modelData"]["serial"]:
@@ -732,13 +735,14 @@ def start_dp_client(config):
 
         # net_glob = CNNMnist(args=config).to(config["device"])
         trained_model, loss_value = local.train(net=copy.deepcopy(w).to(config["device"]))
-        data[local_client_ip] = [len(dict_users[0]), trained_model, loss_value]
+        data[client1_id] = [len(dict_users[0]), trained_model, loss_value]
 
         print("客户端 2 训练结束，准备上传模型......")
         # 发送处理后的数据
         send_data(client_socket, pickle.dumps(data))
         # client_socket.send(pickle.dumps(data))
         print("模型上传完毕\n")
+        print(f"data: {data}")
 
     client_socket.close()
 
@@ -788,7 +792,7 @@ def handle_dp(project_job_id, dataset_file_path):
     except Exception as e:
         return {"error": f"进行预测时出错: {e}"}, 500
 
-    return {"predictions": predictions}, 200
+    return {"prediction": predictions}, 200
 
 
 # HE 处理函数
