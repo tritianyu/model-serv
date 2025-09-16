@@ -1,0 +1,24 @@
+{
+  "summary": {
+    "best_epoch": 20,
+    "best_value": 18.442527981213054,
+    "last_value": 18.442527981213054,
+    "overall_change": -1.1771984707032814,
+    "lower_is_better": true
+  },
+  "flags": [
+    "权重量级过大（疑似特征未归一化）"
+  ],
+  "actions": [
+    "对输入特征做标准化/归一化；降低学习率或 λ"
+  ],
+  "details": {
+    "epochs": 20,
+    "trend_rel_slope": -0.061985226412834986,
+    "volatility": 9.598942096071546e-05,
+    "sign_flips": 0,
+    "last_relative_jump": -0.003237370520029465,
+    "weight_norm": 7810.712781081703,
+    "weight_max_abs": 4685.092153006227
+  }
+}

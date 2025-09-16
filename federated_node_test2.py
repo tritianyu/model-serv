@@ -12,6 +12,14 @@ from torchvision import datasets, transforms
 import torch
 import os
 import json
+import pandas as pd
+
+import math
+from typing import Optional, Dict, Any
+
+import re
+from decimal import Decimal
+
 from flask import Flask, request, jsonify
 
 from differential_privacy_serv.server.utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
@@ -23,15 +31,399 @@ from differential_privacy_serv.server.utils.dataset import FEMNIST, ShakeSpeare
 from opacus.grad_sample import GradSampleModule
 import requests
 import threading
+import argparse
+
+# === Robust socket helpers ===
+ACCEPT_TIMEOUT = 30      # 等待客户端连接的超时（秒）
+CLIENT_IO_TIMEOUT = 15   # 客户端收发的超时（秒）
+client1_id = os.environ.get('CLIENT1_ID') or os.environ.get('CLIENT_ID') or '127.0.0.1'
+
+
+def _tune_server_socket(s, accept_timeout: int = ACCEPT_TIMEOUT):
+    """启用 REUSEADDR/KEEPALIVE、设置 accept 超时，避免端口锁死和无限阻塞。"""
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except Exception:
+        pass
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except Exception:
+        pass
+    # 平台相关的 TCP keepalive
+    for opt, val in (("TCP_KEEPIDLE", 60), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
+        if hasattr(socket, opt):
+            try:
+                s.setsockopt(getattr(socket, opt), val)
+            except Exception:
+                pass
+    s.settimeout(accept_timeout)
+    return s
+
+
+def _safe_close(sock):
+    if not sock:
+        return
+    try:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        sock.close()
+    except Exception:
+        pass
+
+
+def _fmt_num_str(v):
+    """Format numbers to human-friendly strings (avoid 0.16000000000000003)."""
+    try:
+        if isinstance(v, bool):
+            return 'true' if v else 'false'
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, float):
+            if not math.isfinite(v):
+                return str(v)
+            av = abs(v)
+            # Use fixed-point for normal ranges to avoid scientific notation
+            if 1e-3 <= av < 1e6:
+                s = f"{v:.6f}".rstrip('0').rstrip('.')
+                return '0' if s in ('-0', '') else s
+            # For very small/large numbers, use Decimal for a clean string
+            s = format(Decimal(str(v)), 'f').rstrip('0').rstrip('.')
+            return '0' if s in ('-0', '') else s
+        return str(v)
+    except Exception:
+        return str(v)
+
+
+def _stringify_hparams(d):
+    """Return a dict with all values converted to nicely formatted strings."""
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for k, v in d.items():
+        out[str(k)] = _fmt_num_str(v)
+    return out
+
+
+def _split_items_to_list(items):
+    """Split concatenated suggestions into separate list entries by Chinese/English semicolons."""
+    result = []
+    if not items:
+        return result
+    for it in items:
+        if not isinstance(it, str):
+            result.append(str(it))
+            continue
+        parts = re.split(r'[；;]+', it)
+        for p in parts:
+            p = p.strip()
+            if p:
+                result.append(p)
+    # de-duplicate while preserving order
+    seen = set()
+    deduped = []
+    for x in result:
+        if x not in seen:
+            seen.add(x)
+            deduped.append(x)
+    return deduped
 
 
 app = Flask(__name__)
-client1_id = '127.0.0.1'
 
-# 首页路由，通常用来检查服务是否正常运行
-@app.route('/')
-def index():
-    return 'Flask Web Service is running!'
+
+def analyze_he_run(result_or_path, metric_name="Accuracy", lower_is_better=True):
+
+    if isinstance(result_or_path, str):
+        with open(result_or_path, "r", encoding="utf-8") as f:
+            res = json.load(f)
+    else:
+        res = result_or_path
+
+    epochs = int(res.get("global_epochs", 0))
+    y = list(res.get(metric_name, []))
+    w = np.array(res.get("model_parameter", []), dtype=float)
+    if not y:
+        return {"error": f"结果中没有 {metric_name}，无法分析"}
+
+    n = len(y)
+    x = np.arange(n, dtype=float)
+    eps = 1e-12
+
+    y_arr = np.array(y, dtype=float)
+    x01 = (x - x.min()) / (x.max() - x.min() + eps)
+    slope = np.polyfit(x01, y_arr, 1)[0]
+    rel_slope = slope / (abs(y_arr.mean()) + eps)
+
+    diffs = np.diff(y_arr) if n >= 2 else np.array([0.0])
+    vol = diffs.std() / (abs(y_arr.mean()) + eps)
+    signs = np.sign(diffs)
+    sign_flips = int(np.sum(np.abs(np.diff(signs)) > 0))
+
+    last_jump = 0.0
+    if n >= 2:
+        last_jump = (y_arr[-1] - y_arr[-2]) / (abs(y_arr[-2]) + eps)
+    best_idx = int(np.argmin(y_arr) if lower_is_better else np.argmax(y_arr))
+    best_val = float(y_arr[best_idx])
+
+    weight_norm = float(np.linalg.norm(w)) if w.size else None
+    weight_max = float(np.max(np.abs(w))) if w.size else None
+
+    flags, actions = [], []
+    VOL_HIGH = 0.35
+    LAST_SPIKE = 0.25
+    REL_SLOPE_TINY = 0.02
+    WEIGHT_NORM_HUGE = 5e3
+    WEIGHT_MAX_HUGE  = 5e3
+
+    if lower_is_better:
+        if rel_slope > REL_SLOPE_TINY:
+            flags.append("趋势变差（指标整体上升）")
+            actions.append("降低学习率或聚合步长(lambda)；减少本地epochs")
+        elif abs(rel_slope) <= REL_SLOPE_TINY:
+            flags.append("趋势停滞（整体改善不明显）")
+            actions.append("适度增大学习率或训练轮数；检查特征归一化")
+    else:
+        if rel_slope < -REL_SLOPE_TINY:
+            flags.append("趋势变差（指标整体下降）")
+            actions.append("降低学习率/聚合步长，检查数值稳定性")
+        elif abs(rel_slope) <= REL_SLOPE_TINY:
+            flags.append("趋势停滞（整体提升不明显）")
+            actions.append("适度增大学习率或训练轮数；检查数据质量")
+
+    if vol > VOL_HIGH or sign_flips >= max(1, n//6):
+        flags.append("曲线波动较大（可能学习率过大 / 非IID / λ偏大）")
+        actions.append("降低学习率或 λ；减少本地epochs；必要时采用更稳的聚合")
+
+    if (last_jump > LAST_SPIKE) if lower_is_better else (last_jump < -LAST_SPIKE):
+        flags.append("末轮指标明显恶化（疑似不稳定/聚合冲击）")
+        actions.append("引入早停；降低学习率/λ；检查解密频率与数值范围")
+
+    if best_idx <= n - 3:
+        flags.append(f"最佳轮在第 {best_idx+1} 轮（建议早停）")
+        actions.append("设置早停策略（若多轮无改善则停止）")
+
+    if weight_norm is not None and (weight_norm > WEIGHT_NORM_HUGE or weight_max > WEIGHT_MAX_HUGE):
+        flags.append("权重量级过大（疑似特征未归一化）")
+        actions.append("对输入特征做标准化/归一化；降低学习率或 λ")
+
+    seen = set()
+    actions = [a for a in actions if not (a in seen or seen.add(a))]
+
+    summary = {
+        "best_epoch": int(best_idx + 1),
+        "best_value": best_val,
+        "last_value": float(y_arr[-1]),
+        "overall_change": float(y_arr[-1] - y_arr[0]),
+        "lower_is_better": lower_is_better,
+    }
+    details = {
+        "epochs": int(epochs or n),
+        "trend_rel_slope": float(rel_slope),
+        "volatility": float(vol),
+        "sign_flips": int(sign_flips),
+        "last_relative_jump": float(last_jump),
+        "weight_norm": weight_norm,
+        "weight_max_abs": weight_max,
+    }
+
+    return {"summary": summary, "flags": flags, "actions": actions, "details": details}
+
+
+def propose_hparams_from_diag(
+    diag: Dict[str, Any],
+    current: Optional[Dict[str, Any]] = None,
+    model_type: str = 'he'
+) -> Dict[str, Any]:
+    """
+    按模型类型(LR/HE 或 DNN/DP)返回建议的超参：
+    - LR/HE：仅建议 'lr','lambda','local_epochs','global_epochs','batch_size','momentum'
+      （不动 no_models/k/feature_num）
+    - DNN/DP：仅建议 'lr','epochs','batch_size'（可选 dp_epsilon，见下）
+    - relative 始终有；若提供 current，返回 absolute 绝对值（做了边界保护与简单取整）。
+    """
+    import numpy as np
+
+    flags = set(diag.get('flags', []))
+    notes = []
+
+    def _round_sig(x: float) -> float:
+        if x <= 0:
+            return x
+        e = int(np.floor(np.log10(x)))
+        b = round(x / (10 ** e), 3)
+        return b * (10 ** e)
+
+    if model_type in ('he', 'lr'):
+        # 只给 LR/HE 相关的键
+        rel = {
+            'lr': 1.0,
+            'lambda': 1.0,
+            'local_epochs': 1.0,
+            'global_epochs': 1.0,
+            'batch_size': 1.0,
+            'momentum': 1.0,
+        }
+        keys_order = ['lr', 'lambda', 'local_epochs', 'global_epochs', 'batch_size', 'momentum']
+
+        # 若未发现问题：允许稳健地增加训练轮数
+        if not flags:
+            if model_type in ('he', 'lr'):
+                rel['global_epochs'] *= 1.2
+            else:
+                rel['epochs'] *= 1.2
+            notes.append('无异常：可适度增加训练轮数（+10%~20%）')
+
+        # 不稳定：波动/末轮恶化
+        if any('波动' in f for f in flags) or any('末轮指标明显恶化' in f for f in flags):
+            rel['lr'] *= 0.5
+            rel['lambda'] *= 0.5
+            rel['local_epochs'] *= 0.7
+            rel['momentum'] *= 0.8
+            rel['batch_size'] *= 1.2
+            notes.append('不稳定：降低 lr/λ/momentum，略增 batch_size，减少本地轮次')
+
+        # 趋势问题
+        if any('趋势变差' in f for f in flags):
+            rel['lr'] *= 0.7
+            rel['lambda'] *= 0.8
+            notes.append('趋势变差：适度下调 lr/λ')
+        elif any('趋势停滞' in f for f in flags):
+            rel['lr'] *= 1.2
+            rel['global_epochs'] *= 1.2
+            notes.append('趋势停滞：轻微增大 lr 与全局轮数')
+
+        # 早停 & 归一化建议（非超参）
+        if any('最佳轮' in f for f in flags):
+            notes.append('建议开启早停（patience≈3-5 轮）')
+        if any('权重量级过大' in f for f in flags):
+            rel['lr'] *= 0.7  # 学习率略降
+            rel['lambda'] *= 0.8  # 聚合步长略降
+            notes.append('建议对输入特征做标准化/归一化（StandardScaler/MinMaxScaler）')
+
+    else:
+        # DNN/DP：只建议 lr/epochs/batch_size；dp_epsilon 仅在“停滞”时作为可选建议
+        rel = {'lr': 1.0, 'epochs': 1.0, 'batch_size': 1.0}
+        keys_order = ['lr', 'epochs', 'batch_size']
+
+        # 若未发现问题：允许稳健地增加训练轮数（提高收敛精度）
+        if not flags:
+            if model_type in ('he', 'lr'):
+                rel['global_epochs'] *= 1.2
+            else:
+                rel['epochs'] *= 1.2
+            notes.append('无异常：可适度增加训练轮数')
+
+        if any('波动' in f for f in flags) or any('末轮指标明显恶化' in f for f in flags):
+            rel['lr'] *= 0.5
+            rel['batch_size'] *= 1.2
+            rel['epochs'] *= 0.9
+            notes.append('不稳定：降低 lr，略增 batch_size，适度减少 epochs')
+
+        if any('趋势变差' in f for f in flags):
+            rel['lr'] *= 0.7
+            notes.append('趋势变差：适度下调 lr')
+        elif any('趋势停滞' in f for f in flags):
+            rel['lr'] *= 1.2
+            rel['epochs'] *= 1.2
+            notes.append('趋势停滞：轻微增大lr与训练轮数（必要时放宽隐私预算）')
+
+    # 计算绝对值（仅对本模型类型相关键；其余键不返回）
+    abs_vals = None
+    if current:
+        abs_vals = {}
+        for k in keys_order:
+            if k not in current:
+                continue
+            v = current[k]
+            if isinstance(v, (int, float)):
+                if k in ('local_epochs', 'global_epochs', 'epochs', 'batch_size'):
+                    new_v = max(int(round(v * rel.get(k, 1.0))), 1)
+                    abs_vals[k] = new_v
+                elif k in ('lr', 'lambda', 'momentum'):
+                    new_v = v * rel.get(k, 1.0)
+                    if k == 'momentum':
+                        new_v = min(max(new_v, 0.0), 0.999)
+                    else:
+                        new_v = max(new_v, 1e-6)
+                    abs_vals[k] = _round_sig(new_v)
+
+        # DP 可选：仅在“停滞”时给 dp_epsilon 一个温和建议（如提供了 current）
+        if model_type not in ('he', 'lr') and 'dp_epsilon' in current:
+            if any('趋势停滞' in f for f in flags):
+                abs_vals['dp_epsilon'] = _round_sig(current['dp_epsilon'] * 1.1)
+                notes.append('放宽隐私预算：dp_epsilon ↑ ~10%（权衡精度/隐私）')
+
+    # 输出只包含本模型类型相关的键
+    rel = {k: rel[k] for k in keys_order if k in rel}
+    return {'relative': rel, 'absolute': abs_vals, 'notes': notes}
+
+
+@app.route('/diagnose', methods=['POST'])
+def diagnose():
+    try:
+        data = request.json or {}
+        app.logger.info(f"Received request data: {data}")
+        project_job_id = data.get('projectJobId') or data.get('project_job_id')
+        model_type = (data.get('modelType') or data.get('model_type') or '').lower()
+        if not project_job_id or not model_type:
+            return jsonify({"error": "缺少 projectJobId 或 modelType"}), 400
+
+        current_hp = data.get('currentHparams') or data.get('hparams') or None
+
+        # HE / LR 诊断
+        if model_type in ('he', 'lr'):
+            he_path = os.path.join('saved_models', 'he_models', f"{project_job_id}results_HE.json")
+            if not os.path.exists(he_path):
+                return jsonify({"error": f"找不到 HE 结果文件: {he_path}"}), 400
+            diag = analyze_he_run(he_path, metric_name="Accuracy", lower_is_better=True)
+            if 'error' in diag:
+                return jsonify(diag), 400
+
+            suggest = propose_hparams_from_diag(diag, current=current_hp, model_type='he')
+            issues = _split_items_to_list(diag.get("flags", []))
+            actions = _split_items_to_list(diag.get("actions", []))
+            if not issues and not actions:
+                actions = ["目前模型训练状态良好，可继续提高 epoch 进行细化训练（建议 +10%~20%），并监控验证集表现防止过拟合。"]
+            hparams_out = _stringify_hparams(suggest.get('absolute') or {})
+            return jsonify({
+                "issues": issues,
+                "actions": actions,
+                "suggested_hparams": hparams_out
+            }), 200
+
+        # DP / DNN 诊断（复用趋势/波动规则；只返回 DNN 相关的键）
+        elif model_type in ('dp', 'dnn'):
+            dp_json = os.path.join('results', 'output_DP.json')
+            if not os.path.exists(dp_json):
+                return jsonify({"error": f"找不到 DP 结果文件: {dp_json}"}), 400
+            with open(dp_json, 'r', encoding='utf-8') as f:
+                res = json.load(f)
+
+            # 仅保留最小必需字段给分析器（复用 analyze_he_run）
+            res_min = {
+                "global_epochs": res.get("global_epochs"),
+                "Accuracy": res.get("Accuracy", []),
+                "model_parameter": []
+            }
+            diag = analyze_he_run(res_min, metric_name="Accuracy", lower_is_better=True)
+            suggest = propose_hparams_from_diag(diag, current=current_hp, model_type='dp')
+            issues = _split_items_to_list(diag.get("flags", []))
+            actions = _split_items_to_list(diag.get("actions", []))
+            if not issues and not actions:
+                actions = ["目前模型训练状态良好，可继续提高 epoch 进行细化训练（建议 +10%~20%），并监控验证集表现防止过拟合。"]
+            hparams_out = _stringify_hparams(suggest.get('absolute') or {})
+            return jsonify({
+                "issues": issues,
+                "actions": actions,
+                "suggested_hparams": hparams_out
+            }), 200
+
+        else:
+            return jsonify({"error": f"未知的 modelType: {model_type}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"服务器内部错误: {e}"}), 500
 
 
 @app.route('/process_data', methods=['POST'])
@@ -103,6 +495,8 @@ def start_he_server(config):
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # server_socket.bind((config["baseConfig"]["modelControlUrl"], 12345))
     try:
+        # server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _tune_server_socket(server_socket)
         server_socket.bind(("0.0.0.0", 12345))
         server_socket.listen(len(config["baseConfig"]["modelCalUrlList"]))
         print("服务器启动，等待连接...")
@@ -133,6 +527,7 @@ def start_he_server(config):
                 else:
                     app.logger.error(f"No dataset_file_url found for user_id: {user_id}")
                     continue
+            else:
                 # 实际用这个
                 # client_url = f'http://{url}:5002/process_data'
                 # print("这是客户端")
@@ -148,7 +543,7 @@ def start_he_server(config):
                 app.logger.info(config)
     except Exception as e:
         app.logger.error(f"Error occurred while starting he server: {e}")
-        server_socket.close()
+        _safe_close(server_socket)
         print("服务器和所有客户端连接已关闭")
 
     clients = []
@@ -159,15 +554,23 @@ def start_he_server(config):
                       not model_url["isInitiator"]]
     # 动态接受客户端连接并创建实例
     for i, model_url in enumerate(non_initiators):
-        client_socket, addr = server_socket.accept()
+        try:
+            client_socket, addr = server_socket.accept()
+        except socket.timeout:
+            app.logger.error(f"Timeout occurred while waiting for client connection")
+            break
         connected_clients += 1
+        try:
+            client_socket.settimeout(CLIENT_IO_TIMEOUT)
+        except:
+            pass
         print(f'客户端{addr}已连接')
 
         client_instance_config = {
             "config": config,
             "public_key": Server.public_key,
             "data_slice": f"train_datasets[0][{i} * per_client_size:{(i + 1)} * per_client_size]",
-        "data_slice_y": f"train_datasets[1][{i} * per_client_size:{(i + 1)}* per_client_size]",
+            "data_slice_y": f"train_datasets[1][{i} * per_client_size:{(i + 1)}* per_client_size]",
             "num": i + 1
         }
         clients.append(client_socket)
@@ -180,7 +583,7 @@ def start_he_server(config):
         "config_data": instances
     }
     # 发送初始化数据到客户端
-    app.logger.info("Sending initial data to clients")
+    app.logger.info("Sending initial    data to clients")
     for client_socket in clients:
         send_data(client_socket, pickle.dumps(initial_data))
         app.logger.info(f"Sent data to client: {client_socket}")
@@ -223,17 +626,17 @@ def start_he_server(config):
         print(f"Global Epoch {e + 1}, acc: {acc}\n")
 
     for client_socket in clients:
-        client_socket.close()
-    server_socket.close()
+        _safe_close(client_socket)
+    _safe_close(server_socket)
 
-    plt.figure()
-    x = range(1, len(test_acc) + 1, 1)
-    plt.plot(x, test_acc, color='r', marker='.')
-    plt.ylabel('Accuracy')
-    plt.xlabel('Epochs')
-    plt.title('Federated Learning with HE')
-    plt.savefig('./results/acc.png')
-    plt.show()
+    # plt.figure()
+    # x = range(1, len(test_acc) + 1, 1)
+    # plt.plot(x, test_acc, color='r', marker='.')
+    # plt.ylabel('Accuracy')
+    # plt.xlabel('Epochs')
+    # plt.title('Federated Learning with HE')
+    # plt.savefig('./results/acc.png')
+    # plt.show()
 
 
 def start_he_client(config):
@@ -261,6 +664,7 @@ def start_he_client(config):
 
     # 创建socket对象
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.settimeout(CLIENT_IO_TIMEOUT)
     # 连接到服务器
     client_socket.connect((config["baseConfig"]["modelControlUrl"], 12345))
     print(f"{client1_id}已连接服务器")
@@ -431,7 +835,7 @@ def start_dp_server(config):
     # use opacus to wrap model to clip per sample gradient
     if config["modelParams"]["modelData"]["dp_mechanism"] != 'no_dp':
         net_glob = GradSampleModule(net_glob)
-    print(net_glob)
+    # print(net_glob)
     net_glob.train()  # 模型标识为训练状态
 
     # copy weights
@@ -453,6 +857,7 @@ def start_dp_server(config):
 
     # 创建socket对象
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    _tune_server_socket(server_socket)
     # 绑定IP地址和端口号
     server_socket.bind(("0.0.0.0", 12345))
     # 开始监听
@@ -474,11 +879,11 @@ def start_dp_server(config):
             continue
         else:
             # 实际用这个
-            client_url = f'http://{url}:5002/process_data'
-            # if user_id == 132:
-            #     client_url = f'http://{url}:5001/process_data'
-            # elif user_id == 131:
-            #     client_url = f'http://{url}:5003/process_data'
+            # client_url = f'http://{url}:5002/process_data'
+            if user_id == 132:
+                client_url = f'http://{url}:5001/process_data'
+            elif user_id == 131:
+                client_url = f'http://{url}:5003/process_data'
             thread = threading.Thread(target=send_request, args=(client_url, config))
             print(config)
             threads.append(thread)
@@ -491,8 +896,16 @@ def start_dp_server(config):
                       not model_url["isInitiator"]]
     # 动态接受客户端连接
     for i, model_url in enumerate(non_initiators):
-        client_socket, addr = server_socket.accept()
+        try:
+            client_socket, addr = server_socket.accept()
+        except socket.timeout:
+            app.logger.error("等待客户端连接超时，停止接受新连接。")
+            break
         connected_clients += 1
+        try:
+            client_socket.settimeout(CLIENT_IO_TIMEOUT)  # ★
+        except Exception:
+            pass
         print(f'客户端{addr}已连接')
         client_socket_list.append(client_socket)
     app.logger.info(f"Total connected clients: {connected_clients}")
@@ -555,9 +968,8 @@ def start_dp_server(config):
 
     # 关闭连接
     for client_socket in client_socket_list:
-        client_socket.close()
-
-    server_socket.close()
+        _safe_close(client_socket)
+    _safe_close(server_socket)
 
     model = LSTMPredictor_noDP()
     model.load_state_dict(torch.load('LSTMPredictor.pth', map_location=torch.device('cpu')))
@@ -626,8 +1038,6 @@ def start_dp_server(config):
 
 
 def start_dp_client(config):
-
-    # get local ip
 
     app.logger.info(f"Client received config data: {config}")
     # parse args
@@ -713,6 +1123,7 @@ def start_dp_client(config):
 
     # 创建socket对象
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.settimeout(CLIENT_IO_TIMEOUT)
     # 连接到服务器
     client_socket.connect((config["baseConfig"]["modelControlUrl"], 12345))
 
@@ -1021,6 +1432,18 @@ class Client(object):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5002)
+    parser = argparse.ArgumentParser(description='Federated node service')
+    parser.add_argument('--client-id', '--client_ip', dest='client_id', default=None,
+                        help='Client identifier (IP). Defaults to env CLIENT1_ID/CLIENT_ID or 127.0.0.1')
+    parser.add_argument('--port', type=int, default=5002,
+                        help='Flask listen port (default: 5002)')
+    args = parser.parse_args()
+
+    # 允许运行时覆盖 client1_id（不改其它逻辑/入参）
+    if args.client_id:
+        client1_id = args.client_id  # 覆盖上面的默认值/环境变量
+
+    app.logger.info(f'Using client1_id={client1_id}')
+    app.run(debug=True, host='0.0.0.0', port=args.port)
 
 
