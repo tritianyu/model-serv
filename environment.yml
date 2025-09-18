@@ -1,20 +1,21 @@
 name: fedml
 channels:
+  - conda-forge
   - defaults
-  - pytorch
 dependencies:
-  - python=3.9
-  - pytorch=2.0.0
-  - torchvision=0.15.0
-  - torchaudio=2.0.0
-  - cpuonly
+  - python>=3.9,<3.12
+  - numpy
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - pandas
   - openpyxl
+  - flask
+  - requests
   - pip
   - pip:
-    - matplotlib==3.8.0
-    - opacus==1.1.1
-    - absl-py==2.0.0
-    - scipy==1.11.3
-    - scikit-learn==1.3.0
-    - flask
-    - pandas
+      - torch
+      - torchvision
+      - torchaudio
+      - opacus
+      - absl-py

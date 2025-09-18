@@ -17,6 +17,9 @@ import pandas as pd
 import math
 from typing import Optional, Dict, Any
 
+import re
+from decimal import Decimal
+
 from flask import Flask, request, jsonify
 
 from differential_privacy_serv.server.utils.sampling import mnist_iid, mnist_noniid, cifar_iid, cifar_noniid
@@ -28,10 +31,12 @@ from differential_privacy_serv.server.utils.dataset import FEMNIST, ShakeSpeare
 from opacus.grad_sample import GradSampleModule
 import requests
 import threading
+import argparse
 
 # === Robust socket helpers ===
 ACCEPT_TIMEOUT = 30      # 等待客户端连接的超时（秒）
 CLIENT_IO_TIMEOUT = 15   # 客户端收发的超时（秒）
+client1_id = os.environ.get('CLIENT1_ID') or os.environ.get('CLIENT_ID') or '127.0.0.1'
 
 
 def _tune_server_socket(s, accept_timeout: int = ACCEPT_TIMEOUT):
@@ -44,7 +49,7 @@ def _tune_server_socket(s, accept_timeout: int = ACCEPT_TIMEOUT):
         s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
     except Exception:
         pass
-    # 平台相关的 TCP keepalive（尽力而为）
+    # 平台相关的 TCP keepalive
     for opt, val in (("TCP_KEEPIDLE", 60), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
         if hasattr(socket, opt):
             try:
@@ -68,8 +73,64 @@ def _safe_close(sock):
         pass
 
 
+def _fmt_num_str(v):
+    """Format numbers to human-friendly strings (avoid 0.16000000000000003)."""
+    try:
+        if isinstance(v, bool):
+            return 'true' if v else 'false'
+        if isinstance(v, int):
+            return str(v)
+        if isinstance(v, float):
+            if not math.isfinite(v):
+                return str(v)
+            av = abs(v)
+            # Use fixed-point for normal ranges to avoid scientific notation
+            if 1e-3 <= av < 1e6:
+                s = f"{v:.6f}".rstrip('0').rstrip('.')
+                return '0' if s in ('-0', '') else s
+            # For very small/large numbers, use Decimal for a clean string
+            s = format(Decimal(str(v)), 'f').rstrip('0').rstrip('.')
+            return '0' if s in ('-0', '') else s
+        return str(v)
+    except Exception:
+        return str(v)
+
+
+def _stringify_hparams(d):
+    """Return a dict with all values converted to nicely formatted strings."""
+    if not isinstance(d, dict):
+        return {}
+    out = {}
+    for k, v in d.items():
+        out[str(k)] = _fmt_num_str(v)
+    return out
+
+
+def _split_items_to_list(items):
+    """Split concatenated suggestions into separate list entries by Chinese/English semicolons."""
+    result = []
+    if not items:
+        return result
+    for it in items:
+        if not isinstance(it, str):
+            result.append(str(it))
+            continue
+        parts = re.split(r'[；;]+', it)
+        for p in parts:
+            p = p.strip()
+            if p:
+                result.append(p)
+    # de-duplicate while preserving order
+    seen = set()
+    deduped = []
+    for x in result:
+        if x not in seen:
+            seen.add(x)
+            deduped.append(x)
+    return deduped
+
+
 app = Flask(__name__)
-client1_id = '127.0.0.1'
 
 
 def analyze_he_run(result_or_path, metric_name="Accuracy", lower_is_better=True):
@@ -90,7 +151,6 @@ def analyze_he_run(result_or_path, metric_name="Accuracy", lower_is_better=True)
     x = np.arange(n, dtype=float)
     eps = 1e-12
 
-    # 2) 统计
     y_arr = np.array(y, dtype=float)
     x01 = (x - x.min()) / (x.max() - x.min() + eps)
     slope = np.polyfit(x01, y_arr, 1)[0]
@@ -110,7 +170,6 @@ def analyze_he_run(result_or_path, metric_name="Accuracy", lower_is_better=True)
     weight_norm = float(np.linalg.norm(w)) if w.size else None
     weight_max = float(np.max(np.abs(w))) if w.size else None
 
-    # 3) 规则
     flags, actions = [], []
     VOL_HIGH = 0.35
     LAST_SPIKE = 0.25
@@ -149,7 +208,6 @@ def analyze_he_run(result_or_path, metric_name="Accuracy", lower_is_better=True)
         flags.append("权重量级过大（疑似特征未归一化）")
         actions.append("对输入特征做标准化/归一化；降低学习率或 λ")
 
-    # 去重
     seen = set()
     actions = [a for a in actions if not (a in seen or seen.add(a))]
 
@@ -209,7 +267,7 @@ def propose_hparams_from_diag(
         }
         keys_order = ['lr', 'lambda', 'local_epochs', 'global_epochs', 'batch_size', 'momentum']
 
-        # 若未发现问题：允许稳健地增加训练轮数（提高收敛精度）
+        # 若未发现问题：允许稳健地增加训练轮数
         if not flags:
             if model_type in ('he', 'lr'):
                 rel['global_epochs'] *= 1.2
@@ -240,7 +298,7 @@ def propose_hparams_from_diag(
         if any('最佳轮' in f for f in flags):
             notes.append('建议开启早停（patience≈3-5 轮）')
         if any('权重量级过大' in f for f in flags):
-            rel['lr'] *= 0.9  # 学习率略降
+            rel['lr'] *= 0.7  # 学习率略降
             rel['lambda'] *= 0.8  # 聚合步长略降
             notes.append('建议对输入特征做标准化/归一化（StandardScaler/MinMaxScaler）')
 
@@ -255,7 +313,7 @@ def propose_hparams_from_diag(
                 rel['global_epochs'] *= 1.2
             else:
                 rel['epochs'] *= 1.2
-            notes.append('无异常：可适度增加训练轮数（+10%~20%）')
+            notes.append('无异常：可适度增加训练轮数')
 
         if any('波动' in f for f in flags) or any('末轮指标明显恶化' in f for f in flags):
             rel['lr'] *= 0.5
@@ -269,7 +327,7 @@ def propose_hparams_from_diag(
         elif any('趋势停滞' in f for f in flags):
             rel['lr'] *= 1.2
             rel['epochs'] *= 1.2
-            notes.append('趋势停滞：轻微增大 lr 与训练轮数（必要时放宽隐私预算）')
+            notes.append('趋势停滞：轻微增大lr与训练轮数（必要时放宽隐私预算）')
 
     # 计算绝对值（仅对本模型类型相关键；其余键不返回）
     abs_vals = None
@@ -324,14 +382,15 @@ def diagnose():
                 return jsonify(diag), 400
 
             suggest = propose_hparams_from_diag(diag, current=current_hp, model_type='he')
-            issues = diag.get("flags", [])
-            actions = diag.get("actions", [])
+            issues = _split_items_to_list(diag.get("flags", []))
+            actions = _split_items_to_list(diag.get("actions", []))
             if not issues and not actions:
-                actions = ["目前模型训练状态良好，可继续提高 epoch 进行细化训练，并监控验证集表现防止过拟合。"]
+                actions = ["目前模型训练状态良好，可继续提高 epoch 进行细化训练（建议 +10%~20%），并监控验证集表现防止过拟合。"]
+            hparams_out = _stringify_hparams(suggest.get('absolute') or {})
             return jsonify({
                 "issues": issues,
                 "actions": actions,
-                "suggested_hparams": suggest['absolute'] or {}
+                "suggested_hparams": hparams_out
             }), 200
 
         # DP / DNN 诊断（复用趋势/波动规则；只返回 DNN 相关的键）
@@ -350,14 +409,15 @@ def diagnose():
             }
             diag = analyze_he_run(res_min, metric_name="Accuracy", lower_is_better=True)
             suggest = propose_hparams_from_diag(diag, current=current_hp, model_type='dp')
-            issues = diag.get("flags", [])
-            actions = diag.get("actions", [])
+            issues = _split_items_to_list(diag.get("flags", []))
+            actions = _split_items_to_list(diag.get("actions", []))
             if not issues and not actions:
-                actions = ["目前模型训练状态良好，可继续提高epoch进行细化训练，并监控验证集表现防止过拟合。"]
+                actions = ["目前模型训练状态良好，可继续提高 epoch 进行细化训练（建议 +10%~20%），并监控验证集表现防止过拟合。"]
+            hparams_out = _stringify_hparams(suggest.get('absolute') or {})
             return jsonify({
                 "issues": issues,
                 "actions": actions,
-                "suggested_hparams": suggest['absolute'] or {}
+                "suggested_hparams": hparams_out
             }), 200
 
         else:
@@ -935,7 +995,7 @@ def start_dp_server(config):
 
     filename = 'result/output_DP.json'
 
-    data_dict = {"global_epochs": config["modelParams"]["modelData"]["epochs"], "model_parameter": [], "Accuracy": float(loss_list) / 100, "recognize_rate": recognition_rate}
+    data_dict = {"global_epochs": config["modelParams"]["modelData"]["epochs"], "model_parameter": [], "Accuracy": loss_list, "recognize_rate": recognition_rate}
     # 使用 'with' 语句打开文件，创建一个文件对象 file_obj
     with open('results/output_DP.json', 'w', encoding='utf-8') as file_obj:
         # 使用 json.dump() 将数据列表写入文件
@@ -1372,6 +1432,18 @@ class Client(object):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5003)
+    parser = argparse.ArgumentParser(description='Federated node service')
+    parser.add_argument('--client-id', '--client_ip', dest='client_id', default=None,
+                        help='Client identifier (IP). Defaults to env CLIENT1_ID/CLIENT_ID or 127.0.0.1')
+    parser.add_argument('--port', type=int, default=5002,
+                        help='Flask listen port (default: 5002)')
+    args = parser.parse_args()
+
+    # 允许运行时覆盖 client1_id（不改其它逻辑/入参）
+    if args.client_id:
+        client1_id = args.client_id  # 覆盖上面的默认值/环境变量
+
+    app.logger.info(f'Using client1_id={client1_id}')
+    app.run(debug=True, host='0.0.0.0', port=args.port)
 
 
